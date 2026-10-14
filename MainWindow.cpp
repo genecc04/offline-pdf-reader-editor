@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "ThumbnailPane.h"
+#include "SearchPane.h"
 
 #include <QAction>
 #include <QFileDialog>
@@ -21,6 +22,7 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setupViewer();
     setupThumbnailPane();
+    setupSearchPane();
     setupMenus();
     setupToolbar();
 
@@ -50,6 +52,14 @@ void MainWindow::setupMenus()
     QAction *togglePages = m_pagesDock->toggleViewAction();
     togglePages->setShortcut(Qt::Key_F4);
     viewMenu->addAction(togglePages);
+
+    QAction *findAction = viewMenu->addAction("&Find...");
+    findAction->setShortcut(QKeySequence::Find);
+    connect(findAction, &QAction::triggered, this, [this]() {
+        m_searchDock->show();
+        m_searchDock->raise();
+        m_search->focusSearchBox();
+    });
 }
 
 void MainWindow::setupToolbar()
@@ -146,8 +156,29 @@ void MainWindow::setupThumbnailPane()
                              QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::LeftDockWidgetArea, m_pagesDock);
 
-    // thumbnail click -> viewer, and viewer scroll -> thumbnail highlight
     connect(m_thumbnails, &ThumbnailPane::pageRequested, this, &MainWindow::goToPage);
     connect(m_view->pageNavigator(), &QPdfPageNavigator::currentPageChanged,
             m_thumbnails, &ThumbnailPane::setCurrentPage);
+}
+
+void MainWindow::setupSearchPane()
+{
+    m_search = new SearchPane(this);
+    m_search->setDocument(m_document);
+    m_view->setSearchModel(m_search->searchModel());
+
+    m_searchDock = new QDockWidget("Search", this);
+    m_searchDock->setWidget(m_search);
+    m_searchDock->setFeatures(QDockWidget::DockWidgetClosable |
+                              QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_searchDock);
+    tabifyDockWidget(m_pagesDock, m_searchDock);
+    m_pagesDock->raise();
+
+    connect(m_search, &SearchPane::resultSelected, this,
+            [this](int index, int page, QPointF location) {
+                QPdfPageNavigator *nav = m_view->pageNavigator();
+                nav->jump(page, location, nav->currentZoom());
+                m_view->setCurrentSearchResultIndex(index);
+            });
 }

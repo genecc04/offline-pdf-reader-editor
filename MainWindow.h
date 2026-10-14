@@ -7,6 +7,7 @@ class QSpinBox;
 class QLabel;
 class QDockWidget;
 class ThumbnailPane;
+class SearchPane;
 
 class MainWindow : public QMainWindow
 {
@@ -15,11 +16,13 @@ public:
 
 private:
     void setupViewer();
+    void setupThumbnailPane();
+    void setupSearchPane();
     void setupMenus();
     void setupToolbar();
-    void setupThumbnailPane();
     void openFile();
     void goToPage(int page);
+    
 
     QPdfDocument *m_document = nullptr;
     QPdfView *m_view = nullptr;
@@ -27,4 +30,6 @@ private:
     QLabel *m_pageCountLabel = nullptr;
     ThumbnailPane *m_thumbnails = nullptr;
     QDockWidget *m_pagesDock = nullptr;
+    SearchPane *m_search = nullptr;
+    QDockWidget *m_searchDock = nullptr;
 };

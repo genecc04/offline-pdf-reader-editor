@@ -15,6 +15,8 @@ add_executable(PdfApp
     ThumbnailPane.h
     ThumbnailModel.cpp
     ThumbnailModel.h
+    SearchPane.cpp
+    SearchPane.h
 )
 
 target_link_libraries(PdfApp PRIVATE Qt6::Widgets Qt6::Pdf Qt6::PdfWidgets)
