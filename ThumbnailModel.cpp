@@ -5,7 +5,7 @@
 
 ThumbnailModel::ThumbnailModel(QObject *parent)
     : QAbstractListModel(parent)
-    , m_cache(300)   // keep at most 300 thumbnails
+    , m_cache(300)
 {
 }
 
@@ -15,8 +15,6 @@ void ThumbnailModel::setDocument(QPdfDocument *document)
     if (!m_document)
         return;
 
-    // Whenever the document loads, closes, or is replaced:
-    // throw away old thumbnails and tell the view to start over.
     connect(m_document, &QPdfDocument::statusChanged, this, [this]() {
         beginResetModel();
         m_cache.clear();
@@ -47,7 +45,7 @@ QVariant ThumbnailModel::data(const QModelIndex &index, int role) const
             return *cached;
 
         const QPixmap pixmap = renderThumbnail(page);
-        m_cache.insert(page, new QPixmap(pixmap));   // cache takes ownership
+        m_cache.insert(page, new QPixmap(pixmap));
         return pixmap;
     }
 
@@ -56,7 +54,6 @@ QVariant ThumbnailModel::data(const QModelIndex &index, int role) const
 
 QPixmap ThumbnailModel::renderThumbnail(int page) const
 {
-    // Scale the page to fit inside the thumbnail box, keeping its shape.
     const QSizeF pts = m_document->pagePointSize(page);
     const qreal scale = qMin(kThumbWidth / pts.width(), kThumbHeight / pts.height());
     const QSize size(qMax(1, int(pts.width() * scale)),
@@ -64,7 +61,6 @@ QPixmap ThumbnailModel::renderThumbnail(int page) const
 
     const QImage rendered = m_document->render(page, size);
 
-    // Draw onto a white canvas so transparent areas look like paper.
     QImage canvas(rendered.size(), QImage::Format_RGB32);
     canvas.fill(Qt::white);
 

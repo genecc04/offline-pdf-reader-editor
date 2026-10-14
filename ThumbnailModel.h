@@ -23,5 +23,5 @@ private:
     QPixmap renderThumbnail(int page) const;
 
     QPdfDocument *m_document = nullptr;
-    mutable QCache<int, QPixmap> m_cache;   // mutable: data() is const but fills it
+    mutable QCache<int, QPixmap> m_cache;
 };

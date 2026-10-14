@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "ThumbnailPane.h"
 #include "SearchPane.h"
+#include "BookmarkPane.h"
 
 #include <QAction>
 #include <QFileDialog>
@@ -16,6 +17,8 @@
 #include <QSpinBox>
 #include <QToolBar>
 #include <QDockWidget>
+#include <QInputDialog>
+#include <QLineEdit>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -23,6 +26,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupViewer();
     setupThumbnailPane();
     setupSearchPane();
+    setupBookmarkPane();
     setupMenus();
     setupToolbar();
 
@@ -52,6 +56,9 @@ void MainWindow::setupMenus()
     QAction *togglePages = m_pagesDock->toggleViewAction();
     togglePages->setShortcut(Qt::Key_F4);
     viewMenu->addAction(togglePages);
+    QAction *toggleBookmarks = m_bookmarksDock->toggleViewAction();
+    toggleBookmarks->setShortcut(Qt::CTRL | Qt::Key_B);
+    viewMenu->addAction(toggleBookmarks);
 
     QAction *findAction = viewMenu->addAction("&Find...");
     findAction->setShortcut(QKeySequence::Find);
@@ -125,12 +132,35 @@ void MainWindow::setupToolbar()
 
 void MainWindow::openFile()
 {
-    QString path = QFileDialog::getOpenFileName(
+    const QString path = QFileDialog::getOpenFileName(
         this, "Open PDF", QString(), "PDF files (*.pdf)");
     if (path.isEmpty())
         return;
 
-    if (m_document->load(path) != QPdfDocument::Error::None) {
+    m_document->setPassword(QString());
+    QPdfDocument::Error error = m_document->load(path);
+
+    bool firstAttempt = true;
+    while (error == QPdfDocument::Error::IncorrectPassword) {
+        const QString prompt = firstAttempt
+            ? "This PDF is protected. Enter its password:"
+            : "Incorrect password. Try again:";
+        firstAttempt = false;
+
+        bool ok = false;
+        const QString password = QInputDialog::getText(
+            this, "Password required", prompt, QLineEdit::Password, QString(), &ok);
+        if (!ok) {
+            setWindowTitle("PDF Reader");
+            return;
+        }
+
+        m_document->setPassword(password);
+        error = m_document->load(path);
+    }
+
+    if (error != QPdfDocument::Error::None) {
+        setWindowTitle("PDF Reader");
         QMessageBox::warning(this, "Error", "Could not open that PDF.");
         return;
     }
@@ -180,5 +210,25 @@ void MainWindow::setupSearchPane()
                 QPdfPageNavigator *nav = m_view->pageNavigator();
                 nav->jump(page, location, nav->currentZoom());
                 m_view->setCurrentSearchResultIndex(index);
+            });
+}
+
+void MainWindow::setupBookmarkPane()
+{
+    m_bookmarks = new BookmarkPane(this);
+    m_bookmarks->setDocument(m_document);
+
+    m_bookmarksDock = new QDockWidget("Bookmarks", this);
+    m_bookmarksDock->setWidget(m_bookmarks);
+    m_bookmarksDock->setFeatures(QDockWidget::DockWidgetClosable |
+                                 QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_bookmarksDock);
+    tabifyDockWidget(m_pagesDock, m_bookmarksDock);   // third tab on the left
+    m_pagesDock->raise();
+
+    connect(m_bookmarks, &BookmarkPane::bookmarkSelected, this,
+            [this](int page, QPointF location) {
+                QPdfPageNavigator *nav = m_view->pageNavigator();
+                nav->jump(page, location, nav->currentZoom());
             });
 }

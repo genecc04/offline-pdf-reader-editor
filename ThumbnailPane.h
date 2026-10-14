@@ -11,10 +11,10 @@ public:
     explicit ThumbnailPane(QWidget *parent = nullptr);
 
     void setDocument(QPdfDocument *document);
-    void setCurrentPage(int page);   // highlight a page without emitting a signal
+    void setCurrentPage(int page);
 
 signals:
-    void pageRequested(int page);    // user clicked a thumbnail
+    void pageRequested(int page);
 
 private:
     ThumbnailModel *m_model = nullptr;

@@ -8,6 +8,7 @@ class QLabel;
 class QDockWidget;
 class ThumbnailPane;
 class SearchPane;
+class BookmarkPane;
 
 class MainWindow : public QMainWindow
 {
@@ -18,6 +19,7 @@ private:
     void setupViewer();
     void setupThumbnailPane();
     void setupSearchPane();
+    void setupBookmarkPane();
     void setupMenus();
     void setupToolbar();
     void openFile();
@@ -32,4 +34,6 @@ private:
     QDockWidget *m_pagesDock = nullptr;
     SearchPane *m_search = nullptr;
     QDockWidget *m_searchDock = nullptr;
+    BookmarkPane *m_bookmarks = nullptr;
+    QDockWidget *m_bookmarksDock = nullptr;
 };

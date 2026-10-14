@@ -10,13 +10,13 @@ ThumbnailPane::ThumbnailPane(QWidget *parent)
     setModel(m_model);
 
     setViewMode(QListView::IconMode);
-    setFlow(QListView::TopToBottom);   // one vertical column
+    setFlow(QListView::TopToBottom);
     setWrapping(false);
     setMovement(QListView::Static);
     setResizeMode(QListView::Adjust);
     setIconSize(QSize(ThumbnailModel::kThumbWidth, ThumbnailModel::kThumbHeight));
     setSpacing(8);
-    setUniformItemSizes(true);         // lets the view lay out without asking every row
+    setUniformItemSizes(true);
 
     connect(selectionModel(), &QItemSelectionModel::currentRowChanged, this,
             [this](const QModelIndex &current) {
@@ -37,7 +37,7 @@ void ThumbnailPane::setCurrentPage(int page)
     if (!index.isValid())
         return;
 
-    m_syncing = true;               // so our own change doesn't echo as a click
+    m_syncing = true;
     setCurrentIndex(index);
     m_syncing = false;
 }

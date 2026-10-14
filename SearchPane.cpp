@@ -11,32 +11,32 @@
 
 namespace {
 
-class ResultDelegate : public QStyledItemDelegate
-{
-public:
-    ResultDelegate(const QPdfSearchModel *model, QObject *parent)
-        : QStyledItemDelegate(parent), m_model(model) {}
-
-protected:
-    void initStyleOption(QStyleOptionViewItem *option,
-                         const QModelIndex &index) const override
+    class ResultDelegate : public QStyledItemDelegate
     {
-        QStyledItemDelegate::initStyleOption(option, index);
+    public:
+        ResultDelegate(const QPdfSearchModel *model, QObject *parent)
+            : QStyledItemDelegate(parent), m_model(model) {}
 
-        const int page = index.data(int(QPdfSearchModel::Role::Page)).toInt();
-        const QString before = index.data(int(QPdfSearchModel::Role::ContextBefore)).toString();
-        const QString after = index.data(int(QPdfSearchModel::Role::ContextAfter)).toString();
+    protected:
+        void initStyleOption(QStyleOptionViewItem *option,
+                            const QModelIndex &index) const override
+        {
+            QStyledItemDelegate::initStyleOption(option, index);
 
-        option->text = QString("p.%1   ...%2[%3]%4...")
-                           .arg(page + 1)
-                           .arg(before, m_model->searchString(), after);
-    }
+            const int page = index.data(int(QPdfSearchModel::Role::Page)).toInt();
+            const QString before = index.data(int(QPdfSearchModel::Role::ContextBefore)).toString();
+            const QString after = index.data(int(QPdfSearchModel::Role::ContextAfter)).toString();
 
-private:
-    const QPdfSearchModel *m_model;
-};
+            option->text = QString("p.%1   ...%2[%3]%4...")
+                            .arg(page + 1)
+                            .arg(before, m_model->searchString(), after);
+        }
 
-} // namespace
+    private:
+        const QPdfSearchModel *m_model;
+    };
+
+}
 
 SearchPane::SearchPane(QWidget *parent)
     : QWidget(parent)
