@@ -84,3 +84,29 @@ bool PdfEditor::saveAs(const QString &path)
     }
     return true;
 }
+
+bool PdfEditor::rotatePage(int pageIndex, int deltaDegrees)
+{
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+
+    fz_try(m_ctx)
+    {
+        pdf_obj *pageObj = pdf_lookup_page_obj(m_ctx, m_doc, pageIndex);
+
+        const int current = pdf_to_int(m_ctx,
+            pdf_dict_get_inheritable(m_ctx, pageObj, PDF_NAME(Rotate)));
+
+        const int updated = ((current + deltaDegrees) % 360 + 360) % 360;
+
+        pdf_dict_put_int(m_ctx, pageObj, PDF_NAME(Rotate), updated);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
+}

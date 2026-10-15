@@ -21,6 +21,8 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QStatusBar>
+#include <QCloseEvent>
+#include <QFile>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -99,6 +101,16 @@ void MainWindow::setupToolbar()
     QAction *fitWidthAction = toolbar->addAction("Fit width");
     QAction *fitPageAction = toolbar->addAction("Fit page");
 
+    toolbar->addSeparator();
+
+    // Editing
+    m_rotateLeftAction = toolbar->addAction("Rotate left");
+    m_rotateRightAction = toolbar->addAction("Rotate right");
+    m_rotateLeftAction->setEnabled(false);    // enabled once a PDF is open for editing
+    m_rotateRightAction->setEnabled(false);
+    connect(m_rotateLeftAction, &QAction::triggered, this, [this]() { rotateCurrentPage(-90); });
+    connect(m_rotateRightAction, &QAction::triggered, this, [this]() { rotateCurrentPage(90); });
+
     // Wiring
     QPdfPageNavigator *nav = m_view->pageNavigator();
 
@@ -139,14 +151,23 @@ void MainWindow::setupToolbar()
 
 void MainWindow::openFile()
 {
+    if (!confirmDiscard())
+        return;
+
     const QString path = QFileDialog::getOpenFileName(
         this, "Open PDF", QString(), "PDF files (*.pdf)");
     if (path.isEmpty())
         return;
 
+    m_editor.reset();
     m_currentPath.clear();
+    m_viewPath.clear();
     m_password.clear();
+    m_displayName.clear();
+    m_modified = false;
     m_saveAsAction->setEnabled(false);
+    m_rotateLeftAction->setEnabled(false);
+    m_rotateRightAction->setEnabled(false);
 
     m_document->setPassword(QString());   // don't reuse the previous file's password
     QPdfDocument::Error error = m_document->load(path);
@@ -163,7 +184,7 @@ void MainWindow::openFile()
         const QString password = QInputDialog::getText(
             this, "Password required", prompt, QLineEdit::Password, QString(), &ok);
         if (!ok) {                         // user pressed Cancel
-            setWindowTitle("PDF Reader");
+            updateTitle();
             return;
         }
 
@@ -173,15 +194,27 @@ void MainWindow::openFile()
     }
 
     if (error != QPdfDocument::Error::None) {
-        setWindowTitle("PDF Reader");
+        updateTitle();
         QMessageBox::warning(this, "Error", "Could not open that PDF.");
         return;
     }
 
     m_currentPath = path;
+    m_viewPath = path;
     m_password = usedPassword;
-    m_saveAsAction->setEnabled(true);
-    setWindowTitle(QFileInfo(path).fileName() + " - PDF Reader");
+    m_displayName = QFileInfo(path).fileName();
+
+    // Open the same file for editing. Viewing still works if this fails.
+    m_editor = std::make_unique<PdfEditor>();
+    if (m_editor->open(path, m_password)) {
+        m_saveAsAction->setEnabled(true);
+        m_rotateLeftAction->setEnabled(true);
+        m_rotateRightAction->setEnabled(true);
+    } else {
+        statusBar()->showMessage("Editing is not available for this file.", 5000);
+        m_editor.reset();
+    }
+    updateTitle();
 }
 
 void MainWindow::goToPage(int page)
@@ -250,27 +283,109 @@ void MainWindow::setupBookmarkPane()
             });
 }
 
-void MainWindow::saveAs()
+bool MainWindow::saveAs()
 {
-    if (m_currentPath.isEmpty())
-        return;
+    if (!m_editor)
+        return false;
 
     const QString dest = QFileDialog::getSaveFileName(
         this, "Save PDF As", QString(), "PDF files (*.pdf)");
     if (dest.isEmpty())
-        return;
+        return false;
 
-    // Never write over the file the viewer has open.
+    // The editor still reads from the original file, so never overwrite it.
     if (QFileInfo(dest) == QFileInfo(m_currentPath)) {
         QMessageBox::warning(this, "Save As",
                              "Please choose a different file name than the open document.");
+        return false;
+    }
+
+    if (!m_editor->saveAs(dest)) {
+        QMessageBox::warning(this, "Save failed", m_editor->lastError());
+        return false;
+    }
+
+    setModified(false);
+    statusBar()->showMessage("Saved " + QFileInfo(dest).fileName(), 4000);
+    return true;
+}
+
+void MainWindow::rotateCurrentPage(int degrees)
+{
+    if (!m_editor)
+        return;
+
+    const int page = m_view->pageNavigator()->currentPage();
+
+    if (!m_editor->rotatePage(page, degrees)) {
+        QMessageBox::warning(this, "Rotate failed", m_editor->lastError());
         return;
     }
 
-    PdfEditor editor;
-    if (!editor.open(m_currentPath, m_password) || !editor.saveAs(dest)) {
-        QMessageBox::warning(this, "Save failed", editor.lastError());
+    // Write the edited document to a fresh temp file and show that.
+    const QString newPath = m_tempDir.filePath(
+        QString("view-%1.pdf").arg(++m_editCount));
+    if (!m_editor->saveAs(newPath)) {
+        QMessageBox::warning(this, "Rotate failed", m_editor->lastError());
         return;
     }
-    statusBar()->showMessage("Saved " + QFileInfo(dest).fileName(), 4000);
+
+    showFile(newPath, page);
+    setModified(true);
+}
+
+void MainWindow::showFile(const QString &path, int page)
+{
+    const QString previous = m_viewPath;
+
+    m_document->setPassword(m_password);
+    if (m_document->load(path) != QPdfDocument::Error::None) {
+        QMessageBox::warning(this, "Error", "Could not display the edited document.");
+        return;
+    }
+    m_viewPath = path;
+
+    if (previous.startsWith(m_tempDir.path()))
+        QFile::remove(previous);
+
+    goToPage(page);
+    m_thumbnails->setCurrentPage(page);
+}
+
+bool MainWindow::confirmDiscard()
+{
+    if (!m_modified)
+        return true;
+
+    const auto answer = QMessageBox::question(
+        this, "Unsaved changes",
+        "You have unsaved changes. Save them first?",
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+
+    if (answer == QMessageBox::Save)
+        return saveAs();
+    return answer == QMessageBox::Discard;
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (confirmDiscard())
+        event->accept();
+    else
+        event->ignore();
+}
+
+void MainWindow::setModified(bool modified)
+{
+    m_modified = modified;
+    updateTitle();
+}
+
+void MainWindow::updateTitle()
+{
+    if (m_displayName.isEmpty())
+        setWindowTitle("PDF Reader");
+    else
+        setWindowTitle(m_displayName + (m_modified ? " *" : "") + " - PDF Reader");
 }

@@ -1,5 +1,10 @@
 #pragma once
 #include <QMainWindow>
+#include <QString>
+#include <QTemporaryDir>
+#include <memory>
+
+#include "PdfEditor.h"
 
 class QPdfDocument;
 class QPdfView;
@@ -10,11 +15,15 @@ class ThumbnailPane;
 class SearchPane;
 class BookmarkPane;
 class QAction;
+class QCloseEvent;
 
 class MainWindow : public QMainWindow
 {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 private:
     void setupViewer();
@@ -23,10 +32,16 @@ private:
     void setupBookmarkPane();
     void setupMenus();
     void setupToolbar();
+
     void openFile();
+    bool saveAs();
     void goToPage(int page);
-    void saveAs();
-    
+
+    void rotateCurrentPage(int degrees);
+    void showFile(const QString &path, int page);
+    bool confirmDiscard();
+    void setModified(bool modified);
+    void updateTitle();
 
     QPdfDocument *m_document = nullptr;
     QPdfView *m_view = nullptr;
@@ -38,7 +53,17 @@ private:
     QDockWidget *m_searchDock = nullptr;
     BookmarkPane *m_bookmarks = nullptr;
     QDockWidget *m_bookmarksDock = nullptr;
+
     QAction *m_saveAsAction = nullptr;
+    QAction *m_rotateLeftAction = nullptr;
+    QAction *m_rotateRightAction = nullptr;
+
+    std::unique_ptr<PdfEditor> m_editor;
+    QTemporaryDir m_tempDir;
     QString m_currentPath;
+    QString m_viewPath;
+    QString m_displayName;
     QString m_password;
+    int m_editCount = 0;
+    bool m_modified = false;
 };
