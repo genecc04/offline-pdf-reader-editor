@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Pdf PdfWidgets)
+find_package(unofficial-libmupdf CONFIG REQUIRED)
 
 add_executable(PdfApp
     main.cpp
@@ -19,6 +20,11 @@ add_executable(PdfApp
     SearchPane.h
     BookmarkPane.cpp
     BookmarkPane.h
+    PdfEditor.cpp
+    PdfEditor.h
 )
 
-target_link_libraries(PdfApp PRIVATE Qt6::Widgets Qt6::Pdf Qt6::PdfWidgets)
+target_link_libraries(PdfApp PRIVATE
+    Qt6::Widgets Qt6::Pdf Qt6::PdfWidgets
+    unofficial::libmupdf::libmupdf
+)

@@ -9,6 +9,7 @@ class QDockWidget;
 class ThumbnailPane;
 class SearchPane;
 class BookmarkPane;
+class QAction;
 
 class MainWindow : public QMainWindow
 {
@@ -24,6 +25,7 @@ private:
     void setupToolbar();
     void openFile();
     void goToPage(int page);
+    void saveAs();
     
 
     QPdfDocument *m_document = nullptr;
@@ -36,4 +38,7 @@ private:
     QDockWidget *m_searchDock = nullptr;
     BookmarkPane *m_bookmarks = nullptr;
     QDockWidget *m_bookmarksDock = nullptr;
+    QAction *m_saveAsAction = nullptr;
+    QString m_currentPath;
+    QString m_password;
 };

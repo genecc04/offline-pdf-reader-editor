@@ -2,6 +2,7 @@
 #include "ThumbnailPane.h"
 #include "SearchPane.h"
 #include "BookmarkPane.h"
+#include "PdfEditor.h"
 
 #include <QAction>
 #include <QFileDialog>
@@ -19,6 +20,7 @@
 #include <QDockWidget>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QStatusBar>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -51,6 +53,11 @@ void MainWindow::setupMenus()
     QAction *openAction = fileMenu->addAction("&Open...");
     openAction->setShortcut(QKeySequence::Open);
     connect(openAction, &QAction::triggered, this, &MainWindow::openFile);
+
+    m_saveAsAction = fileMenu->addAction("Save &As...");
+    m_saveAsAction->setShortcut(QKeySequence::SaveAs);
+    m_saveAsAction->setEnabled(false);   // nothing to save until a PDF is open
+    connect(m_saveAsAction, &QAction::triggered, this, &MainWindow::saveAs);
 
     QMenu *viewMenu = menuBar()->addMenu("&View");
     QAction *togglePages = m_pagesDock->toggleViewAction();
@@ -137,9 +144,14 @@ void MainWindow::openFile()
     if (path.isEmpty())
         return;
 
-    m_document->setPassword(QString());
+    m_currentPath.clear();
+    m_password.clear();
+    m_saveAsAction->setEnabled(false);
+
+    m_document->setPassword(QString());   // don't reuse the previous file's password
     QPdfDocument::Error error = m_document->load(path);
 
+    QString usedPassword;
     bool firstAttempt = true;
     while (error == QPdfDocument::Error::IncorrectPassword) {
         const QString prompt = firstAttempt
@@ -150,12 +162,13 @@ void MainWindow::openFile()
         bool ok = false;
         const QString password = QInputDialog::getText(
             this, "Password required", prompt, QLineEdit::Password, QString(), &ok);
-        if (!ok) {
+        if (!ok) {                         // user pressed Cancel
             setWindowTitle("PDF Reader");
             return;
         }
 
         m_document->setPassword(password);
+        usedPassword = password;
         error = m_document->load(path);
     }
 
@@ -164,6 +177,10 @@ void MainWindow::openFile()
         QMessageBox::warning(this, "Error", "Could not open that PDF.");
         return;
     }
+
+    m_currentPath = path;
+    m_password = usedPassword;
+    m_saveAsAction->setEnabled(true);
     setWindowTitle(QFileInfo(path).fileName() + " - PDF Reader");
 }
 
@@ -231,4 +248,29 @@ void MainWindow::setupBookmarkPane()
                 QPdfPageNavigator *nav = m_view->pageNavigator();
                 nav->jump(page, location, nav->currentZoom());
             });
+}
+
+void MainWindow::saveAs()
+{
+    if (m_currentPath.isEmpty())
+        return;
+
+    const QString dest = QFileDialog::getSaveFileName(
+        this, "Save PDF As", QString(), "PDF files (*.pdf)");
+    if (dest.isEmpty())
+        return;
+
+    // Never write over the file the viewer has open.
+    if (QFileInfo(dest) == QFileInfo(m_currentPath)) {
+        QMessageBox::warning(this, "Save As",
+                             "Please choose a different file name than the open document.");
+        return;
+    }
+
+    PdfEditor editor;
+    if (!editor.open(m_currentPath, m_password) || !editor.saveAs(dest)) {
+        QMessageBox::warning(this, "Save failed", editor.lastError());
+        return;
+    }
+    statusBar()->showMessage("Saved " + QFileInfo(dest).fileName(), 4000);
 }

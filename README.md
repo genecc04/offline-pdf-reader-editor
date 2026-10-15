@@ -9,8 +9,9 @@ A desktop PDF reader (and, in progress, editor) built with C++ and Qt 6.
 - Page thumbnails, rendered on demand
 - Full-text search with highlighted results
 - Bookmarks / table of contents
+- Save a copy of the open PDF (File > Save As)
 
-Editing features are in development.
+More editing features are in development.
 
 ## Building
 
