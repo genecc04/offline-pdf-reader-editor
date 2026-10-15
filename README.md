@@ -14,11 +14,20 @@ Editing features are in development.
 
 ## Building
 
-Requirements: CMake 3.21+, a C++17 compiler (developed with MSVC), and Qt 6
-with the Widgets, Pdf, and PdfWidgets modules.
+Requirements: CMake 3.21+, a C++17 compiler (developed with MSVC), Qt 6
+with the Widgets, Pdf, and PdfWidgets modules (developed with Qt 6.8.0),
+and [vcpkg](https://github.com/microsoft/vcpkg).
+
+Install MuPDF with vcpkg:
 
 ```
-cmake -S . -B build -DCMAKE_PREFIX_PATH=<path to your Qt, e.g. C:/Qt/6.x.x/msvc2022_64>
+vcpkg install libmupdf:x64-windows-static-md --host-triplet=x64-windows-static-md
+```
+
+Then configure and build, adjusting the paths to your machine:
+
+```
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-md -DCMAKE_PREFIX_PATH="C:/Qt/6.8.0/msvc2022_64;C:/vcpkg/installed/x64-windows-static-md"
 cmake --build build --config Debug
 ```
 
