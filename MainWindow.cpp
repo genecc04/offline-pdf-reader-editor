@@ -111,6 +111,11 @@ void MainWindow::setupToolbar()
     connect(m_rotateLeftAction, &QAction::triggered, this, [this]() { rotateCurrentPage(-90); });
     connect(m_rotateRightAction, &QAction::triggered, this, [this]() { rotateCurrentPage(90); });
 
+    // Delete
+    m_deletePageAction = toolbar->addAction("Delete page");
+    m_deletePageAction->setEnabled(false);
+    connect(m_deletePageAction, &QAction::triggered, this, &MainWindow::deleteCurrentPage);
+
     // Wiring
     QPdfPageNavigator *nav = m_view->pageNavigator();
 
@@ -168,6 +173,7 @@ void MainWindow::openFile()
     m_saveAsAction->setEnabled(false);
     m_rotateLeftAction->setEnabled(false);
     m_rotateRightAction->setEnabled(false);
+    m_deletePageAction->setEnabled(false);
 
     m_document->setPassword(QString());   // don't reuse the previous file's password
     QPdfDocument::Error error = m_document->load(path);
@@ -210,6 +216,7 @@ void MainWindow::openFile()
         m_saveAsAction->setEnabled(true);
         m_rotateLeftAction->setEnabled(true);
         m_rotateRightAction->setEnabled(true);
+        m_deletePageAction->setEnabled(true);
     } else {
         statusBar()->showMessage("Editing is not available for this file.", 5000);
         m_editor.reset();
@@ -321,17 +328,7 @@ void MainWindow::rotateCurrentPage(int degrees)
         QMessageBox::warning(this, "Rotate failed", m_editor->lastError());
         return;
     }
-
-    // Write the edited document to a fresh temp file and show that.
-    const QString newPath = m_tempDir.filePath(
-        QString("view-%1.pdf").arg(++m_editCount));
-    if (!m_editor->saveAs(newPath)) {
-        QMessageBox::warning(this, "Rotate failed", m_editor->lastError());
-        return;
-    }
-
-    showFile(newPath, page);
-    setModified(true);
+    refreshAfterEdit(page);
 }
 
 void MainWindow::showFile(const QString &path, int page)
@@ -388,4 +385,48 @@ void MainWindow::updateTitle()
         setWindowTitle("PDF Reader");
     else
         setWindowTitle(m_displayName + (m_modified ? " *" : "") + " - PDF Reader");
+}
+
+bool MainWindow::refreshAfterEdit(int page)
+{
+    // Write the edited document to a fresh temp file and show that.
+    const QString newPath = m_tempDir.filePath(
+        QString("view-%1.pdf").arg(++m_editCount));
+    if (!m_editor->saveAs(newPath)) {
+        QMessageBox::warning(this, "Edit failed", m_editor->lastError());
+        return false;
+    }
+
+    showFile(newPath, page);
+    setModified(true);
+    return true;
+}
+
+void MainWindow::deleteCurrentPage()
+{
+    if (!m_editor)
+        return;
+
+    const int pageCount = m_document->pageCount();
+    if (pageCount <= 1) {
+        QMessageBox::information(this, "Delete page",
+                                 "A PDF must keep at least one page.");
+        return;
+    }
+
+    const int page = m_view->pageNavigator()->currentPage();
+    const auto answer = QMessageBox::question(
+        this, "Delete page",
+        QString("Delete page %1 of %2?").arg(page + 1).arg(pageCount),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+
+    if (!m_editor->deletePage(page)) {
+        QMessageBox::warning(this, "Delete failed", m_editor->lastError());
+        return;
+    }
+
+    // One page fewer: if the last page was deleted, land on the new last page.
+    refreshAfterEdit(qMin(page, pageCount - 2));
 }

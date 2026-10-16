@@ -26,6 +26,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 
 private:
+    // setup
     void setupViewer();
     void setupThumbnailPane();
     void setupSearchPane();
@@ -33,12 +34,18 @@ private:
     void setupMenus();
     void setupToolbar();
 
+    // file and viewing
     void openFile();
     bool saveAs();
     void goToPage(int page);
-
-    void rotateCurrentPage(int degrees);
     void showFile(const QString &path, int page);
+
+    // editing
+    void rotateCurrentPage(int degrees);
+    void deleteCurrentPage();
+    bool refreshAfterEdit(int page);
+
+    // document state
     bool confirmDiscard();
     void setModified(bool modified);
     void updateTitle();
@@ -57,6 +64,7 @@ private:
     QAction *m_saveAsAction = nullptr;
     QAction *m_rotateLeftAction = nullptr;
     QAction *m_rotateRightAction = nullptr;
+        QAction *m_deletePageAction = nullptr;
 
     std::unique_ptr<PdfEditor> m_editor;
     QTemporaryDir m_tempDir;

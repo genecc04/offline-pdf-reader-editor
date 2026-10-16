@@ -110,3 +110,28 @@ bool PdfEditor::rotatePage(int pageIndex, int deltaDegrees)
     }
     return true;
 }
+
+bool PdfEditor::deletePage(int pageIndex)
+{
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+
+    fz_try(m_ctx)
+    {
+        const int count = pdf_count_pages(m_ctx, m_doc);
+        if (pageIndex < 0 || pageIndex >= count)
+            fz_throw(m_ctx, FZ_ERROR_GENERIC, "That page does not exist.");
+        if (count <= 1)
+            fz_throw(m_ctx, FZ_ERROR_GENERIC, "A PDF must keep at least one page.");
+
+        pdf_delete_page(m_ctx, m_doc, pageIndex);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
+}

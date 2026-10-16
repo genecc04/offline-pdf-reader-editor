@@ -16,6 +16,7 @@ public:
     bool open(const QString &path, const QString &password = QString());
     bool saveAs(const QString &path);
     bool rotatePage(int pageIndex, int deltaDegrees);
+    bool deletePage(int pageIndex);
     void close();
 
     QString lastError() const { return m_error; }
