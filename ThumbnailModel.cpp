@@ -2,6 +2,7 @@
 
 #include <QPdfDocument>
 #include <QPainter>
+#include <QMimeData>
 
 ThumbnailModel::ThumbnailModel(QObject *parent)
     : QAbstractListModel(parent)
@@ -69,4 +70,36 @@ QPixmap ThumbnailModel::renderThumbnail(int page) const
     painter.end();
 
     return QPixmap::fromImage(canvas);
+}
+
+Qt::ItemFlags ThumbnailModel::flags(const QModelIndex &index) const
+{
+    if (!index.isValid())
+        return Qt::ItemIsDropEnabled;   // dropping between thumbnails = dropping on the list itself
+
+    return QAbstractListModel::flags(index) | Qt::ItemIsDragEnabled;
+}
+
+Qt::DropActions ThumbnailModel::supportedDragActions() const
+{
+    return Qt::MoveAction;
+}
+
+Qt::DropActions ThumbnailModel::supportedDropActions() const
+{
+    return Qt::MoveAction;
+}
+
+QStringList ThumbnailModel::mimeTypes() const
+{
+    return { kPageMimeType };
+}
+
+QMimeData *ThumbnailModel::mimeData(const QModelIndexList &indexes) const
+{
+    // The drag carries just the page number, not the thumbnail image.
+    auto *mime = new QMimeData;
+    if (!indexes.isEmpty())
+        mime->setData(kPageMimeType, QByteArray::number(indexes.first().row()));
+    return mime;
 }

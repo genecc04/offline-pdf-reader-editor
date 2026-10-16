@@ -1,7 +1,9 @@
 #include "ThumbnailPane.h"
 #include "ThumbnailModel.h"
 
+#include <QDropEvent>
 #include <QItemSelectionModel>
+#include <QMimeData>
 
 ThumbnailPane::ThumbnailPane(QWidget *parent)
     : QListView(parent)
@@ -9,14 +11,16 @@ ThumbnailPane::ThumbnailPane(QWidget *parent)
     m_model = new ThumbnailModel(this);
     setModel(m_model);
 
-    setViewMode(QListView::IconMode);
-    setFlow(QListView::TopToBottom);
-    setWrapping(false);
-    setMovement(QListView::Static);
-    setResizeMode(QListView::Adjust);
+    // A plain vertical list: thumbnail with its page number beside it.
+    setViewMode(QListView::ListMode);
     setIconSize(QSize(ThumbnailModel::kThumbWidth, ThumbnailModel::kThumbHeight));
     setSpacing(8);
     setUniformItemSizes(true);
+
+    // Reordering stays off until the main window says editing is possible.
+    setDragDropMode(QAbstractItemView::NoDragDrop);
+    setDropIndicatorShown(true);
+    setDefaultDropAction(Qt::MoveAction);
 
     connect(selectionModel(), &QItemSelectionModel::currentRowChanged, this,
             [this](const QModelIndex &current) {
@@ -37,7 +41,41 @@ void ThumbnailPane::setCurrentPage(int page)
     if (!index.isValid())
         return;
 
-    m_syncing = true;
+    m_syncing = true;               // so our own change doesn't echo as a click
     setCurrentIndex(index);
     m_syncing = false;
+}
+
+void ThumbnailPane::setReorderEnabled(bool enabled)
+{
+    setDragDropMode(enabled ? QAbstractItemView::InternalMove
+                            : QAbstractItemView::NoDragDrop);
+}
+
+void ThumbnailPane::dropEvent(QDropEvent *event)
+{
+    if (!event->mimeData()->hasFormat(ThumbnailModel::kPageMimeType)) {
+        event->ignore();
+        return;
+    }
+
+    const int from = event->mimeData()->data(ThumbnailModel::kPageMimeType).toInt();
+    const int count = m_model->rowCount();
+    const int y = event->position().toPoint().y();
+
+    // Insert before the first thumbnail whose middle is below the cursor.
+    int insertBefore = count;
+    for (int row = 0; row < count; ++row) {
+        if (y < visualRect(m_model->index(row)).center().y()) {
+            insertBefore = row;
+            break;
+        }
+    }
+
+    // Removing the dragged page first shifts everything after it up by one.
+    const int to = (insertBefore > from) ? insertBefore - 1 : insertBefore;
+
+    event->acceptProposedAction();   // we handle the move ourselves; the model stays read-only
+    if (to != from)
+        emit pageMoveRequested(from, to);
 }

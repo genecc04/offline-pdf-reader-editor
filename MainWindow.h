@@ -42,6 +42,7 @@ private:
 
     // editing
     void rotateCurrentPage(int degrees);
+    void movePage(int from, int to);
     void deleteCurrentPage();
     bool refreshAfterEdit(int page);
 

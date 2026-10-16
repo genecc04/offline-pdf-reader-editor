@@ -173,6 +173,7 @@ void MainWindow::openFile()
     m_saveAsAction->setEnabled(false);
     m_rotateLeftAction->setEnabled(false);
     m_rotateRightAction->setEnabled(false);
+    m_thumbnails->setReorderEnabled(false);
     m_deletePageAction->setEnabled(false);
 
     m_document->setPassword(QString());   // don't reuse the previous file's password
@@ -216,6 +217,7 @@ void MainWindow::openFile()
         m_saveAsAction->setEnabled(true);
         m_rotateLeftAction->setEnabled(true);
         m_rotateRightAction->setEnabled(true);
+        m_thumbnails->setReorderEnabled(true);
         m_deletePageAction->setEnabled(true);
     } else {
         statusBar()->showMessage("Editing is not available for this file.", 5000);
@@ -246,6 +248,10 @@ void MainWindow::setupThumbnailPane()
     connect(m_thumbnails, &ThumbnailPane::pageRequested, this, &MainWindow::goToPage);
     connect(m_view->pageNavigator(), &QPdfPageNavigator::currentPageChanged,
             m_thumbnails, &ThumbnailPane::setCurrentPage);
+
+    // Queued: the move reloads the document, which must not happen in the middle of a drop.
+    connect(m_thumbnails, &ThumbnailPane::pageMoveRequested, this,
+            &MainWindow::movePage, Qt::QueuedConnection);
 }
 
 void MainWindow::setupSearchPane()
@@ -429,4 +435,16 @@ void MainWindow::deleteCurrentPage()
 
     // One page fewer: if the last page was deleted, land on the new last page.
     refreshAfterEdit(qMin(page, pageCount - 2));
+}
+
+void MainWindow::movePage(int from, int to)
+{
+    if (!m_editor)
+        return;
+
+    if (!m_editor->movePage(from, to)) {
+        QMessageBox::warning(this, "Move failed", m_editor->lastError());
+        return;
+    }
+    refreshAfterEdit(to);            // stay on the page that was moved
 }

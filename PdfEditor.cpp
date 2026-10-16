@@ -1,6 +1,7 @@
 #include "PdfEditor.h"
 
 #include <QByteArray>
+#include <vector>
 
 extern "C" {
 #include <mupdf/fitz.h>
@@ -127,6 +128,54 @@ bool PdfEditor::deletePage(int pageIndex)
             fz_throw(m_ctx, FZ_ERROR_GENERIC, "A PDF must keep at least one page.");
 
         pdf_delete_page(m_ctx, m_doc, pageIndex);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
+}
+
+bool PdfEditor::movePage(int fromIndex, int toIndex)
+{
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+
+    int count = 0;
+    fz_var(count);
+    fz_try(m_ctx)
+    {
+        count = pdf_count_pages(m_ctx, m_doc);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+
+    if (fromIndex < 0 || fromIndex >= count || toIndex < 0 || toIndex >= count) {
+        m_error = "That page does not exist.";
+        return false;
+    }
+    if (fromIndex == toIndex)
+        return true;
+
+    // Build the new order BEFORE the fz_try block (vectors don't belong inside it):
+    // all page numbers, with 'from' taken out and put back at position 'to'.
+    std::vector<int> order;
+    for (int i = 0; i < count; ++i) {
+        if (i != fromIndex)
+            order.push_back(i);
+    }
+    order.insert(order.begin() + toIndex, fromIndex);
+    const int *pages = order.data();
+
+    fz_try(m_ctx)
+    {
+        pdf_rearrange_pages(m_ctx, m_doc, count, pages, PDF_CLEAN_STRUCTURE_DROP);
     }
     fz_catch(m_ctx)
     {
