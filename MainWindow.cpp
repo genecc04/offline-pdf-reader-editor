@@ -66,6 +66,10 @@ void MainWindow::setupMenus()
     m_extractAction->setEnabled(false);
     connect(m_extractAction, &QAction::triggered, this, &MainWindow::extractPages);
 
+    m_insertAction = fileMenu->addAction("&Insert pages from PDF...");
+    m_insertAction->setEnabled(false);
+    connect(m_insertAction, &QAction::triggered, this, &MainWindow::insertPages);
+
     QMenu *viewMenu = menuBar()->addMenu("&View");
     QAction *togglePages = m_pagesDock->toggleViewAction();
     togglePages->setShortcut(Qt::Key_F4);
@@ -111,7 +115,7 @@ void MainWindow::setupToolbar()
     // Editing
     m_rotateLeftAction = toolbar->addAction("Rotate left");
     m_rotateRightAction = toolbar->addAction("Rotate right");
-    m_rotateLeftAction->setEnabled(false);    // enabled once a PDF is open for editing
+    m_rotateLeftAction->setEnabled(false);
     m_rotateRightAction->setEnabled(false);
     connect(m_rotateLeftAction, &QAction::triggered, this, [this]() { rotateCurrentPage(-90); });
     connect(m_rotateRightAction, &QAction::triggered, this, [this]() { rotateCurrentPage(90); });
@@ -181,6 +185,7 @@ void MainWindow::openFile()
     m_thumbnails->setReorderEnabled(false);
     m_deletePageAction->setEnabled(false);
     m_extractAction->setEnabled(false);
+    m_insertAction->setEnabled(false);
 
     m_document->setPassword(QString());
     QPdfDocument::Error error = m_document->load(path);
@@ -225,6 +230,7 @@ void MainWindow::openFile()
         m_thumbnails->setReorderEnabled(true);
         m_deletePageAction->setEnabled(true);
         m_extractAction->setEnabled(true);
+        m_insertAction->setEnabled(true);
     } else {
         statusBar()->showMessage("Editing is not available for this file.", 5000);
         m_editor.reset();
@@ -399,7 +405,6 @@ void MainWindow::updateTitle()
 
 bool MainWindow::refreshAfterEdit(int page)
 {
-    // Write the edited document to a fresh temp file and show that.
     const QString newPath = m_tempDir.filePath(
         QString("view-%1.pdf").arg(++m_editCount));
     if (!m_editor->saveAs(newPath)) {
@@ -485,4 +490,33 @@ void MainWindow::extractPages()
     }
 
     statusBar()->showMessage("Extracted pages to " + QFileInfo(dest).fileName(), 4000);
+}
+
+void MainWindow::insertPages()
+{
+    if (!m_editor)
+        return;
+
+    const QString source = QFileDialog::getOpenFileName(
+        this, "Choose the PDF to insert", QString(), "PDF files (*.pdf)");
+    if (source.isEmpty())
+        return;
+
+    const int pageCount = m_document->pageCount();
+    const int current = m_view->pageNavigator()->currentPage();
+
+    bool ok = false;
+    const int after = QInputDialog::getInt(
+        this, "Insert pages",
+        QString("Insert after page (0 = at the start, %1 = at the end):").arg(pageCount),
+        current + 1, 0, pageCount, 1, &ok);
+    if (!ok)
+        return;
+
+    if (!m_editor->insertPagesFrom(source, after)) {
+        QMessageBox::warning(this, "Insert failed", m_editor->lastError());
+        return;
+    }
+
+    refreshAfterEdit(after);
 }

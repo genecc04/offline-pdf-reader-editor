@@ -208,7 +208,6 @@ bool PdfEditor::keepOnlyPages(int firstIndex, int lastIndex)
         return false;
     }
 
-    // The pages to keep, in order. Built outside fz_try, as before.
     std::vector<int> keep;
     for (int i = firstIndex; i <= lastIndex; ++i)
         keep.push_back(i);
@@ -218,6 +217,52 @@ bool PdfEditor::keepOnlyPages(int firstIndex, int lastIndex)
     fz_try(m_ctx)
     {
         pdf_rearrange_pages(m_ctx, m_doc, keepCount, pages, PDF_CLEAN_STRUCTURE_DROP);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
+}
+
+bool PdfEditor::insertPagesFrom(const QString &sourcePath, int insertAt)
+{
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+
+    const QByteArray pathUtf8 = sourcePath.toUtf8();
+    const char *cPath = pathUtf8.constData();
+
+    pdf_document *src = nullptr;
+    pdf_graft_map *map = nullptr;
+    fz_var(src);
+    fz_var(map);
+
+    fz_try(m_ctx)
+    {
+        src = pdf_open_document(m_ctx, cPath);
+        if (fz_needs_password(m_ctx, &src->super))
+            fz_throw(m_ctx, FZ_ERROR_GENERIC,
+                     "The PDF to insert is password-protected, which is not supported yet.");
+
+        const int destCount = pdf_count_pages(m_ctx, m_doc);
+        const int srcCount = pdf_count_pages(m_ctx, src);
+        if (insertAt < 0 || insertAt > destCount)
+            fz_throw(m_ctx, FZ_ERROR_GENERIC, "That position is not valid.");
+
+        map = pdf_new_graft_map(m_ctx, m_doc);
+        for (int i = 0; i < srcCount; ++i)
+            pdf_graft_mapped_page(m_ctx, map, insertAt + i, src, i);
+    }
+    fz_always(m_ctx)
+    {
+        if (map)
+            pdf_drop_graft_map(m_ctx, map);
+        if (src)
+            pdf_drop_document(m_ctx, src);
     }
     fz_catch(m_ctx)
     {

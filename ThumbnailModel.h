@@ -21,7 +21,6 @@ public:
     int rowCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &index, int role) const override;
 
-    // Drag and drop (used for reordering pages)
     Qt::ItemFlags flags(const QModelIndex &index) const override;
     Qt::DropActions supportedDragActions() const override;
     Qt::DropActions supportedDropActions() const override;

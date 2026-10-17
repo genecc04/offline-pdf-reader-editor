@@ -18,6 +18,7 @@ public:
     bool keepOnlyPages(int firstIndex, int lastIndex);
     bool rotatePage(int pageIndex, int deltaDegrees);
     bool movePage(int fromIndex, int toIndex);
+    bool insertPagesFrom(const QString &sourcePath, int insertAt);
     bool deletePage(int pageIndex);
     void close();
 

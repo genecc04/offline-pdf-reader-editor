@@ -14,10 +14,9 @@ PageRangeDialog::PageRangeDialog(int pageCount, int currentPage, QWidget *parent
     m_to = new QSpinBox(this);
     m_from->setRange(1, pageCount);
     m_to->setRange(1, pageCount);
-    m_from->setValue(currentPage + 1);   // default: just the page you're on
+    m_from->setValue(currentPage + 1);
     m_to->setValue(currentPage + 1);
 
-    // Keep "from" <= "to": moving one past the other drags the other along.
     connect(m_from, &QSpinBox::valueChanged, this, [this](int value) {
         if (value > m_to->value())
             m_to->setValue(value);
@@ -43,7 +42,7 @@ PageRangeDialog::PageRangeDialog(int pageCount, int currentPage, QWidget *parent
 
 int PageRangeDialog::firstPage() const
 {
-    return m_from->value() - 1;   // the spin boxes show 1-based numbers
+    return m_from->value() - 1;
 }
 
 int PageRangeDialog::lastPage() const

@@ -8,8 +8,8 @@ class PageRangeDialog : public QDialog
 public:
     PageRangeDialog(int pageCount, int currentPage, QWidget *parent = nullptr);
 
-    int firstPage() const;   // 0-based, inclusive
-    int lastPage() const;    // 0-based, inclusive
+    int firstPage() const;
+    int lastPage() const;
 
 private:
     QSpinBox *m_from = nullptr;
