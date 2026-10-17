@@ -56,7 +56,6 @@ SearchPane::SearchPane(QWidget *parent)
     layout->addWidget(m_input);
     layout->addWidget(m_results);
 
-    // Search when Enter is pressed; clear results when the box is emptied.
     connect(m_input, &QLineEdit::returnPressed, this, [this]() {
         m_model->setSearchString(m_input->text());
     });
@@ -65,7 +64,6 @@ SearchPane::SearchPane(QWidget *parent)
             m_model->setSearchString(QString());
     });
 
-    // Selecting a result tells the outside world where it is.
     connect(m_results->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this](const QModelIndex &current) {
                 if (!current.isValid())

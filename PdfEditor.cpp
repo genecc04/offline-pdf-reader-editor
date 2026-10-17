@@ -36,7 +36,6 @@ bool PdfEditor::open(const QString &path, const QString &password)
         return false;
     }
 
-    // Convert to plain C strings BEFORE the fz_try block.
     const QByteArray pathUtf8 = path.toUtf8();
     const QByteArray passUtf8 = password.toUtf8();
     const char *cPath = pathUtf8.constData();
@@ -55,7 +54,7 @@ bool PdfEditor::open(const QString &path, const QString &password)
     fz_catch(m_ctx)
     {
         m_error = QString::fromUtf8(fz_caught_message(m_ctx));
-        pdf_drop_document(m_ctx, doc);   // safe if doc is still null
+        pdf_drop_document(m_ctx, doc);
         return false;
     }
 
@@ -63,7 +62,7 @@ bool PdfEditor::open(const QString &path, const QString &password)
     return true;
 }
 
-bool PdfEditor::saveAs(const QString &path)
+bool PdfEditor::saveAs(const QString &path, bool removeUnused)
 {
     if (!m_doc) {
         m_error = "No document is open.";
@@ -73,6 +72,8 @@ bool PdfEditor::saveAs(const QString &path)
     const QByteArray pathUtf8 = path.toUtf8();
     const char *cPath = pathUtf8.constData();
     pdf_write_options opts = pdf_default_write_options;
+    if (removeUnused)
+        opts.do_garbage = 2;
 
     fz_try(m_ctx)
     {
@@ -163,8 +164,6 @@ bool PdfEditor::movePage(int fromIndex, int toIndex)
     if (fromIndex == toIndex)
         return true;
 
-    // Build the new order BEFORE the fz_try block (vectors don't belong inside it):
-    // all page numbers, with 'from' taken out and put back at position 'to'.
     std::vector<int> order;
     for (int i = 0; i < count; ++i) {
         if (i != fromIndex)
@@ -176,6 +175,49 @@ bool PdfEditor::movePage(int fromIndex, int toIndex)
     fz_try(m_ctx)
     {
         pdf_rearrange_pages(m_ctx, m_doc, count, pages, PDF_CLEAN_STRUCTURE_DROP);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
+}
+
+bool PdfEditor::keepOnlyPages(int firstIndex, int lastIndex)
+{
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+
+    int count = 0;
+    fz_var(count);
+    fz_try(m_ctx)
+    {
+        count = pdf_count_pages(m_ctx, m_doc);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+
+    if (firstIndex < 0 || lastIndex >= count || firstIndex > lastIndex) {
+        m_error = "That page range is not valid.";
+        return false;
+    }
+
+    // The pages to keep, in order. Built outside fz_try, as before.
+    std::vector<int> keep;
+    for (int i = firstIndex; i <= lastIndex; ++i)
+        keep.push_back(i);
+    const int *pages = keep.data();
+    const int keepCount = int(keep.size());
+
+    fz_try(m_ctx)
+    {
+        pdf_rearrange_pages(m_ctx, m_doc, keepCount, pages, PDF_CLEAN_STRUCTURE_DROP);
     }
     fz_catch(m_ctx)
     {

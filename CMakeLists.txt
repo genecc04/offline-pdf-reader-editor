@@ -22,6 +22,8 @@ add_executable(PdfApp
     BookmarkPane.h
     PdfEditor.cpp
     PdfEditor.h
+    PageRangeDialog.cpp
+    PageRangeDialog.h
 )
 
 target_link_libraries(PdfApp PRIVATE

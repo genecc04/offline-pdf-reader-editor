@@ -43,6 +43,7 @@ private:
     // editing
     void rotateCurrentPage(int degrees);
     void movePage(int from, int to);
+    void extractPages();
     void deleteCurrentPage();
     bool refreshAfterEdit(int page);
 
@@ -65,7 +66,8 @@ private:
     QAction *m_saveAsAction = nullptr;
     QAction *m_rotateLeftAction = nullptr;
     QAction *m_rotateRightAction = nullptr;
-        QAction *m_deletePageAction = nullptr;
+    QAction *m_extractAction = nullptr;
+    QAction *m_deletePageAction = nullptr;
 
     std::unique_ptr<PdfEditor> m_editor;
     QTemporaryDir m_tempDir;

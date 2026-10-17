@@ -75,7 +75,7 @@ QPixmap ThumbnailModel::renderThumbnail(int page) const
 Qt::ItemFlags ThumbnailModel::flags(const QModelIndex &index) const
 {
     if (!index.isValid())
-        return Qt::ItemIsDropEnabled;   // dropping between thumbnails = dropping on the list itself
+        return Qt::ItemIsDropEnabled;
 
     return QAbstractListModel::flags(index) | Qt::ItemIsDragEnabled;
 }
@@ -97,7 +97,6 @@ QStringList ThumbnailModel::mimeTypes() const
 
 QMimeData *ThumbnailModel::mimeData(const QModelIndexList &indexes) const
 {
-    // The drag carries just the page number, not the thumbnail image.
     auto *mime = new QMimeData;
     if (!indexes.isEmpty())
         mime->setData(kPageMimeType, QByteArray::number(indexes.first().row()));

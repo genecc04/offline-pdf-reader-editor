@@ -10,11 +10,12 @@ public:
     PdfEditor();
     ~PdfEditor();
 
-    PdfEditor(const PdfEditor &) = delete;            // owns raw pointers: no copying
+    PdfEditor(const PdfEditor &) = delete;
     PdfEditor &operator=(const PdfEditor &) = delete;
 
     bool open(const QString &path, const QString &password = QString());
-    bool saveAs(const QString &path);
+    bool saveAs(const QString &path, bool removeUnused = false);
+    bool keepOnlyPages(int firstIndex, int lastIndex);
     bool rotatePage(int pageIndex, int deltaDegrees);
     bool movePage(int fromIndex, int toIndex);
     bool deletePage(int pageIndex);

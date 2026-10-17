@@ -11,13 +11,11 @@ ThumbnailPane::ThumbnailPane(QWidget *parent)
     m_model = new ThumbnailModel(this);
     setModel(m_model);
 
-    // A plain vertical list: thumbnail with its page number beside it.
     setViewMode(QListView::ListMode);
     setIconSize(QSize(ThumbnailModel::kThumbWidth, ThumbnailModel::kThumbHeight));
     setSpacing(8);
     setUniformItemSizes(true);
 
-    // Reordering stays off until the main window says editing is possible.
     setDragDropMode(QAbstractItemView::NoDragDrop);
     setDropIndicatorShown(true);
     setDefaultDropAction(Qt::MoveAction);
@@ -41,7 +39,7 @@ void ThumbnailPane::setCurrentPage(int page)
     if (!index.isValid())
         return;
 
-    m_syncing = true;               // so our own change doesn't echo as a click
+    m_syncing = true;
     setCurrentIndex(index);
     m_syncing = false;
 }
@@ -63,7 +61,6 @@ void ThumbnailPane::dropEvent(QDropEvent *event)
     const int count = m_model->rowCount();
     const int y = event->position().toPoint().y();
 
-    // Insert before the first thumbnail whose middle is below the cursor.
     int insertBefore = count;
     for (int row = 0; row < count; ++row) {
         if (y < visualRect(m_model->index(row)).center().y()) {
@@ -72,10 +69,9 @@ void ThumbnailPane::dropEvent(QDropEvent *event)
         }
     }
 
-    // Removing the dragged page first shifts everything after it up by one.
     const int to = (insertBefore > from) ? insertBefore - 1 : insertBefore;
 
-    event->acceptProposedAction();   // we handle the move ourselves; the model stays read-only
+    event->acceptProposedAction();
     if (to != from)
         emit pageMoveRequested(from, to);
 }

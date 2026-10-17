@@ -12,12 +12,12 @@ public:
     explicit ThumbnailPane(QWidget *parent = nullptr);
 
     void setDocument(QPdfDocument *document);
-    void setCurrentPage(int page);        // highlight a page without emitting a signal
-    void setReorderEnabled(bool enabled); // allow drag-and-drop reordering
+    void setCurrentPage(int page);
+    void setReorderEnabled(bool enabled);
 
 signals:
-    void pageRequested(int page);                  // user clicked a thumbnail
-    void pageMoveRequested(int from, int to);      // user dragged a thumbnail
+    void pageRequested(int page);
+    void pageMoveRequested(int from, int to);
 
 protected:
     void dropEvent(QDropEvent *event) override;

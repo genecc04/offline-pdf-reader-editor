@@ -3,6 +3,7 @@
 #include "SearchPane.h"
 #include "BookmarkPane.h"
 #include "PdfEditor.h"
+#include "PageRangeDialog.h"
 
 #include <QAction>
 #include <QFileDialog>
@@ -58,8 +59,12 @@ void MainWindow::setupMenus()
 
     m_saveAsAction = fileMenu->addAction("Save &As...");
     m_saveAsAction->setShortcut(QKeySequence::SaveAs);
-    m_saveAsAction->setEnabled(false);   // nothing to save until a PDF is open
+    m_saveAsAction->setEnabled(false);
     connect(m_saveAsAction, &QAction::triggered, this, &MainWindow::saveAs);
+
+    m_extractAction = fileMenu->addAction("&Extract pages...");
+    m_extractAction->setEnabled(false);
+    connect(m_extractAction, &QAction::triggered, this, &MainWindow::extractPages);
 
     QMenu *viewMenu = menuBar()->addMenu("&View");
     QAction *togglePages = m_pagesDock->toggleViewAction();
@@ -175,8 +180,9 @@ void MainWindow::openFile()
     m_rotateRightAction->setEnabled(false);
     m_thumbnails->setReorderEnabled(false);
     m_deletePageAction->setEnabled(false);
+    m_extractAction->setEnabled(false);
 
-    m_document->setPassword(QString());   // don't reuse the previous file's password
+    m_document->setPassword(QString());
     QPdfDocument::Error error = m_document->load(path);
 
     QString usedPassword;
@@ -190,7 +196,7 @@ void MainWindow::openFile()
         bool ok = false;
         const QString password = QInputDialog::getText(
             this, "Password required", prompt, QLineEdit::Password, QString(), &ok);
-        if (!ok) {                         // user pressed Cancel
+        if (!ok) {
             updateTitle();
             return;
         }
@@ -211,7 +217,6 @@ void MainWindow::openFile()
     m_password = usedPassword;
     m_displayName = QFileInfo(path).fileName();
 
-    // Open the same file for editing. Viewing still works if this fails.
     m_editor = std::make_unique<PdfEditor>();
     if (m_editor->open(path, m_password)) {
         m_saveAsAction->setEnabled(true);
@@ -219,6 +224,7 @@ void MainWindow::openFile()
         m_rotateRightAction->setEnabled(true);
         m_thumbnails->setReorderEnabled(true);
         m_deletePageAction->setEnabled(true);
+        m_extractAction->setEnabled(true);
     } else {
         statusBar()->showMessage("Editing is not available for this file.", 5000);
         m_editor.reset();
@@ -249,7 +255,6 @@ void MainWindow::setupThumbnailPane()
     connect(m_view->pageNavigator(), &QPdfPageNavigator::currentPageChanged,
             m_thumbnails, &ThumbnailPane::setCurrentPage);
 
-    // Queued: the move reloads the document, which must not happen in the middle of a drop.
     connect(m_thumbnails, &ThumbnailPane::pageMoveRequested, this,
             &MainWindow::movePage, Qt::QueuedConnection);
 }
@@ -286,7 +291,7 @@ void MainWindow::setupBookmarkPane()
     m_bookmarksDock->setFeatures(QDockWidget::DockWidgetClosable |
                                  QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::LeftDockWidgetArea, m_bookmarksDock);
-    tabifyDockWidget(m_pagesDock, m_bookmarksDock);   // third tab on the left
+    tabifyDockWidget(m_pagesDock, m_bookmarksDock);
     m_pagesDock->raise();
 
     connect(m_bookmarks, &BookmarkPane::bookmarkSelected, this,
@@ -306,7 +311,6 @@ bool MainWindow::saveAs()
     if (dest.isEmpty())
         return false;
 
-    // The editor still reads from the original file, so never overwrite it.
     if (QFileInfo(dest) == QFileInfo(m_currentPath)) {
         QMessageBox::warning(this, "Save As",
                              "Please choose a different file name than the open document.");
@@ -433,7 +437,6 @@ void MainWindow::deleteCurrentPage()
         return;
     }
 
-    // One page fewer: if the last page was deleted, land on the new last page.
     refreshAfterEdit(qMin(page, pageCount - 2));
 }
 
@@ -446,5 +449,40 @@ void MainWindow::movePage(int from, int to)
         QMessageBox::warning(this, "Move failed", m_editor->lastError());
         return;
     }
-    refreshAfterEdit(to);            // stay on the page that was moved
+    refreshAfterEdit(to);
+}
+
+void MainWindow::extractPages()
+{
+    if (!m_editor)
+        return;
+
+    const int pageCount = m_document->pageCount();
+    const int current = m_view->pageNavigator()->currentPage();
+
+    PageRangeDialog dialog(pageCount, current, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString dest = QFileDialog::getSaveFileName(
+        this, "Save extracted pages as", QString(), "PDF files (*.pdf)");
+    if (dest.isEmpty())
+        return;
+
+    if (QFileInfo(dest) == QFileInfo(m_currentPath)
+        || QFileInfo(dest) == QFileInfo(m_viewPath)) {
+        QMessageBox::warning(this, "Extract pages",
+                             "Please choose a different file name than the open document.");
+        return;
+    }
+
+    PdfEditor extractor;
+    if (!extractor.open(m_viewPath, m_password)
+        || !extractor.keepOnlyPages(dialog.firstPage(), dialog.lastPage())
+        || !extractor.saveAs(dest, true)) {
+        QMessageBox::warning(this, "Extract failed", extractor.lastError());
+        return;
+    }
+
+    statusBar()->showMessage("Extracted pages to " + QFileInfo(dest).fileName(), 4000);
 }
