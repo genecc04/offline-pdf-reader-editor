@@ -24,6 +24,8 @@ add_executable(PdfApp
     PdfEditor.h
     PageRangeDialog.cpp
     PageRangeDialog.h
+    EditHistory.cpp
+    EditHistory.h
 )
 
 target_link_libraries(PdfApp PRIVATE

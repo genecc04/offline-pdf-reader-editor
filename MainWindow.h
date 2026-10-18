@@ -1,9 +1,11 @@
 #pragma once
 #include <QMainWindow>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <memory>
 
+#include "EditHistory.h"
 #include "PdfEditor.h"
 
 class QPdfDocument;
@@ -38,7 +40,7 @@ private:
     void openFile();
     bool saveAs();
     void goToPage(int page);
-    void showFile(const QString &path, int page);
+    bool showFile(const QString &path, int page);
 
     // editing
     void rotateCurrentPage(int degrees);
@@ -47,11 +49,17 @@ private:
     void insertPages();
     void deleteCurrentPage();
     bool refreshAfterEdit(int page);
+    void undo();
+    void redo();
+    void stepHistory(const QString &path);
 
     // document state
     bool confirmDiscard();
-    void setModified(bool modified);
     void updateTitle();
+    void updateActions();
+    bool reopenEditor(const QString &path);
+    void removeSnapshots(const QStringList &paths);
+    bool isTempFile(const QString &path) const;
 
     QPdfDocument *m_document = nullptr;
     QPdfView *m_view = nullptr;
@@ -65,18 +73,19 @@ private:
     QDockWidget *m_bookmarksDock = nullptr;
 
     QAction *m_saveAsAction = nullptr;
+    QAction *m_extractAction = nullptr;
+    QAction *m_insertAction = nullptr;
+    QAction *m_undoAction = nullptr;
+    QAction *m_redoAction = nullptr;
     QAction *m_rotateLeftAction = nullptr;
     QAction *m_rotateRightAction = nullptr;
-    QAction *m_insertAction = nullptr;
-    QAction *m_extractAction = nullptr;
     QAction *m_deletePageAction = nullptr;
 
     std::unique_ptr<PdfEditor> m_editor;
+    EditHistory m_history;
     QTemporaryDir m_tempDir;
     QString m_currentPath;
-    QString m_viewPath;
     QString m_displayName;
     QString m_password;
     int m_editCount = 0;
-    bool m_modified = false;
 };
