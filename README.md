@@ -10,6 +10,7 @@ Reading:
 - Page thumbnails, rendered on demand
 - Full-text search with highlighted results
 - Bookmarks / table of contents
+- Recent files list, drag a PDF onto the window to open it, and remembered window layout
 
 Editing:
 - Rotate or delete the current page

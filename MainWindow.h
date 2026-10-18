@@ -1,32 +1,39 @@
 #pragma once
+#include <QList>
 #include <QMainWindow>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <memory>
-#include <QList>
 
 #include "EditHistory.h"
 #include "PdfEditor.h"
 
+class QAction;
+class QCloseEvent;
+class QDockWidget;
+class QDragEnterEvent;
+class QDropEvent;
+class QLabel;
+class QMenu;
 class QPdfDocument;
 class QPdfView;
 class QSpinBox;
-class QLabel;
-class QDockWidget;
-class ThumbnailPane;
-class SearchPane;
 class BookmarkPane;
-class QAction;
-class QCloseEvent;
+class SearchPane;
+class ThumbnailPane;
 
 class MainWindow : public QMainWindow
 {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
 
+    void openPath(const QString &path);   // asks to save unsaved changes first
+
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private:
     // setup
@@ -39,9 +46,13 @@ private:
 
     // file and viewing
     void openFile();
+    void loadDocument(const QString &path);
     bool saveAs();
     void goToPage(int page);
     bool showFile(const QString &path, int page, bool reportErrors = true);
+    void addRecentFile(const QString &path);
+    void updateRecentMenu();
+    void showAbout();
 
     // editing
     void rotateSelectedPages(int degrees);
@@ -73,6 +84,7 @@ private:
     QDockWidget *m_searchDock = nullptr;
     BookmarkPane *m_bookmarks = nullptr;
     QDockWidget *m_bookmarksDock = nullptr;
+    QMenu *m_recentMenu = nullptr;
 
     QAction *m_saveAsAction = nullptr;
     QAction *m_extractAction = nullptr;

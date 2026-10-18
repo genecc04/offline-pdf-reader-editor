@@ -6,25 +6,53 @@
 #include "PageRangeDialog.h"
 
 #include <QAction>
+#include <QApplication>
+#include <QCloseEvent>
 #include <QDir>
+#include <QDockWidget>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPdfDocument>
 #include <QPdfPageNavigator>
 #include <QPdfView>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
-#include <QToolBar>
-#include <QDockWidget>
-#include <QInputDialog>
-#include <QLineEdit>
 #include <QStatusBar>
-#include <QCloseEvent>
-#include <QFile>
+#include <QTimer>
+#include <QToolBar>
+#include <QUrl>
+
+#include <algorithm>
+
+namespace {
+
+    constexpr int kMaxRecentFiles = 8;
+
+    // The first local .pdf file in a drag, or an empty string.
+    QString droppedPdf(const QMimeData *mime)
+    {
+        if (!mime->hasUrls())
+            return QString();
+        const QList<QUrl> urls = mime->urls();
+        for (const QUrl &url : urls) {
+            if (url.isLocalFile() && url.toLocalFile().endsWith(".pdf", Qt::CaseInsensitive))
+                return url.toLocalFile();
+        }
+        return QString();
+    }
+
+}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -37,8 +65,13 @@ MainWindow::MainWindow(QWidget *parent)
     setupToolbar();
     updateActions();
 
+    setAcceptDrops(true);
     setWindowTitle("PDF Reader");
     resize(900, 700);
+
+    QSettings settings;
+    restoreGeometry(settings.value("window/geometry").toByteArray());
+    restoreState(settings.value("window/state").toByteArray());
 }
 
 void MainWindow::setupViewer()
@@ -52,12 +85,81 @@ void MainWindow::setupViewer()
     setCentralWidget(m_view);
 }
 
+void MainWindow::setupThumbnailPane()
+{
+    m_thumbnails = new ThumbnailPane(this);
+    m_thumbnails->setDocument(m_document);
+
+    m_pagesDock = new QDockWidget("Pages", this);
+    m_pagesDock->setObjectName("pagesDock");
+    m_pagesDock->setWidget(m_thumbnails);
+    m_pagesDock->setFeatures(QDockWidget::DockWidgetClosable |
+                             QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_pagesDock);
+
+    connect(m_thumbnails, &ThumbnailPane::pageRequested, this, &MainWindow::goToPage);
+    connect(m_view->pageNavigator(), &QPdfPageNavigator::currentPageChanged,
+            m_thumbnails, &ThumbnailPane::setCurrentPage);
+
+    connect(m_thumbnails, &ThumbnailPane::pageMoveRequested, this,
+            &MainWindow::movePage, Qt::QueuedConnection);
+}
+
+void MainWindow::setupSearchPane()
+{
+    m_search = new SearchPane(this);
+    m_search->setDocument(m_document);
+    m_view->setSearchModel(m_search->searchModel());
+
+    m_searchDock = new QDockWidget("Search", this);
+    m_searchDock->setObjectName("searchDock");
+    m_searchDock->setWidget(m_search);
+    m_searchDock->setFeatures(QDockWidget::DockWidgetClosable |
+                              QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_searchDock);
+    tabifyDockWidget(m_pagesDock, m_searchDock);
+    m_pagesDock->raise();
+
+    connect(m_search, &SearchPane::resultSelected, this,
+            [this](int index, int page, QPointF location) {
+                QPdfPageNavigator *nav = m_view->pageNavigator();
+                nav->jump(page, location, nav->currentZoom());
+                m_view->setCurrentSearchResultIndex(index);
+            });
+}
+
+void MainWindow::setupBookmarkPane()
+{
+    m_bookmarks = new BookmarkPane(this);
+    m_bookmarks->setDocument(m_document);
+
+    m_bookmarksDock = new QDockWidget("Bookmarks", this);
+    m_bookmarksDock->setObjectName("bookmarksDock");
+    m_bookmarksDock->setWidget(m_bookmarks);
+    m_bookmarksDock->setFeatures(QDockWidget::DockWidgetClosable |
+                                 QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_bookmarksDock);
+    tabifyDockWidget(m_pagesDock, m_bookmarksDock);
+    m_pagesDock->raise();
+
+    connect(m_bookmarks, &BookmarkPane::bookmarkSelected, this,
+            [this](int page, QPointF location) {
+                QPdfPageNavigator *nav = m_view->pageNavigator();
+                nav->jump(page, location, nav->currentZoom());
+            });
+}
+
 void MainWindow::setupMenus()
 {
     QMenu *fileMenu = menuBar()->addMenu("&File");
     QAction *openAction = fileMenu->addAction("&Open...");
     openAction->setShortcut(QKeySequence::Open);
     connect(openAction, &QAction::triggered, this, &MainWindow::openFile);
+
+    m_recentMenu = fileMenu->addMenu("Open &Recent");
+    updateRecentMenu();
+
+    fileMenu->addSeparator();
 
     m_saveAsAction = fileMenu->addAction("Save &As...");
     m_saveAsAction->setShortcut(QKeySequence::SaveAs);
@@ -93,11 +195,16 @@ void MainWindow::setupMenus()
         m_searchDock->raise();
         m_search->focusSearchBox();
     });
+
+    QMenu *helpMenu = menuBar()->addMenu("&Help");
+    connect(helpMenu->addAction("&About"), &QAction::triggered, this, &MainWindow::showAbout);
+    connect(helpMenu->addAction("About &Qt"), &QAction::triggered, qApp, &QApplication::aboutQt);
 }
 
 void MainWindow::setupToolbar()
 {
     QToolBar *toolbar = addToolBar("Navigation");
+    toolbar->setObjectName("navigationToolbar");
     toolbar->setMovable(false);
 
     // Page navigation
@@ -122,7 +229,9 @@ void MainWindow::setupToolbar()
 
     // Editing
     m_rotateLeftAction = toolbar->addAction("Rotate left");
+    m_rotateLeftAction->setShortcut(Qt::CTRL | Qt::Key_L);
     m_rotateRightAction = toolbar->addAction("Rotate right");
+    m_rotateRightAction->setShortcut(Qt::CTRL | Qt::Key_R);
     connect(m_rotateLeftAction, &QAction::triggered, this, [this]() { rotateSelectedPages(-90); });
     connect(m_rotateRightAction, &QAction::triggered, this, [this]() { rotateSelectedPages(90); });
 
@@ -167,67 +276,7 @@ void MainWindow::setupToolbar()
     });
 }
 
-void MainWindow::setupThumbnailPane()
-{
-    m_thumbnails = new ThumbnailPane(this);
-    m_thumbnails->setDocument(m_document);
-
-    m_pagesDock = new QDockWidget("Pages", this);
-    m_pagesDock->setWidget(m_thumbnails);
-    m_pagesDock->setFeatures(QDockWidget::DockWidgetClosable |
-                             QDockWidget::DockWidgetMovable);
-    addDockWidget(Qt::LeftDockWidgetArea, m_pagesDock);
-
-    connect(m_thumbnails, &ThumbnailPane::pageRequested, this, &MainWindow::goToPage);
-    connect(m_view->pageNavigator(), &QPdfPageNavigator::currentPageChanged,
-            m_thumbnails, &ThumbnailPane::setCurrentPage);
-
-    // Queued: the move reloads the document, which must not happen in the middle of a drop.
-    connect(m_thumbnails, &ThumbnailPane::pageMoveRequested, this,
-            &MainWindow::movePage, Qt::QueuedConnection);
-}
-
-void MainWindow::setupSearchPane()
-{
-    m_search = new SearchPane(this);
-    m_search->setDocument(m_document);
-    m_view->setSearchModel(m_search->searchModel());
-
-    m_searchDock = new QDockWidget("Search", this);
-    m_searchDock->setWidget(m_search);
-    m_searchDock->setFeatures(QDockWidget::DockWidgetClosable |
-                              QDockWidget::DockWidgetMovable);
-    addDockWidget(Qt::LeftDockWidgetArea, m_searchDock);
-    tabifyDockWidget(m_pagesDock, m_searchDock);
-    m_pagesDock->raise();
-
-    connect(m_search, &SearchPane::resultSelected, this,
-            [this](int index, int page, QPointF location) {
-                QPdfPageNavigator *nav = m_view->pageNavigator();
-                nav->jump(page, location, nav->currentZoom());
-                m_view->setCurrentSearchResultIndex(index);
-            });
-}
-
-void MainWindow::setupBookmarkPane()
-{
-    m_bookmarks = new BookmarkPane(this);
-    m_bookmarks->setDocument(m_document);
-
-    m_bookmarksDock = new QDockWidget("Bookmarks", this);
-    m_bookmarksDock->setWidget(m_bookmarks);
-    m_bookmarksDock->setFeatures(QDockWidget::DockWidgetClosable |
-                                 QDockWidget::DockWidgetMovable);
-    addDockWidget(Qt::LeftDockWidgetArea, m_bookmarksDock);
-    tabifyDockWidget(m_pagesDock, m_bookmarksDock);
-    m_pagesDock->raise();
-
-    connect(m_bookmarks, &BookmarkPane::bookmarkSelected, this,
-            [this](int page, QPointF location) {
-                QPdfPageNavigator *nav = m_view->pageNavigator();
-                nav->jump(page, location, nav->currentZoom());
-            });
-}
+// opening files
 
 void MainWindow::openFile()
 {
@@ -239,6 +288,18 @@ void MainWindow::openFile()
     if (path.isEmpty())
         return;
 
+    loadDocument(path);
+}
+
+void MainWindow::openPath(const QString &path)
+{
+    if (!confirmDiscard())
+        return;
+    loadDocument(path);
+}
+
+void MainWindow::loadDocument(const QString &path)
+{
     m_editor.reset();
     m_document->close();
     removeSnapshots(m_history.states());
@@ -282,6 +343,7 @@ void MainWindow::openFile()
     m_password = usedPassword;
     m_displayName = QFileInfo(path).fileName();
     m_history.reset(path);
+    addRecentFile(path);
 
     if (!m_tempDir.isValid() || !reopenEditor(path))
         statusBar()->showMessage("Editing is not available for this file.", 5000);
@@ -330,6 +392,83 @@ bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
     m_thumbnails->setCurrentPage(target);
     return true;
 }
+
+// recent files, about, drops
+
+void MainWindow::addRecentFile(const QString &path)
+{
+    QSettings settings;
+    QStringList recent = settings.value("recentFiles").toStringList();
+
+    const QString full = QFileInfo(path).absoluteFilePath();
+    recent.removeAll(full);
+    recent.prepend(full);
+    while (recent.size() > kMaxRecentFiles)
+        recent.removeLast();
+    settings.setValue("recentFiles", recent);
+
+    QTimer::singleShot(0, this, &MainWindow::updateRecentMenu);
+}
+
+void MainWindow::updateRecentMenu()
+{
+    m_recentMenu->clear();
+
+    QSettings settings;
+    QStringList recent = settings.value("recentFiles").toStringList();
+    recent.erase(std::remove_if(recent.begin(), recent.end(),
+                                [](const QString &p) { return !QFileInfo::exists(p); }),
+                 recent.end());
+    settings.setValue("recentFiles", recent);
+
+    m_recentMenu->setEnabled(!recent.isEmpty());
+    if (recent.isEmpty())
+        return;
+
+    for (int i = 0; i < recent.size(); ++i) {
+        const QString path = recent.at(i);
+        QAction *action = m_recentMenu->addAction(
+            QString("&%1  %2").arg(i + 1).arg(QFileInfo(path).fileName()));
+        action->setStatusTip(path);
+        connect(action, &QAction::triggered, this, [this, path]() { openPath(path); });
+    }
+
+    m_recentMenu->addSeparator();
+    QAction *clear = m_recentMenu->addAction("&Clear list");
+    connect(clear, &QAction::triggered, this, [this]() {
+        QSettings().remove("recentFiles");
+        QTimer::singleShot(0, this, &MainWindow::updateRecentMenu);
+    });
+}
+
+void MainWindow::showAbout()
+{
+    QMessageBox::about(this, "About PDF Reader",
+        "<h3>Offline PDF Reader/Editor</h3>"
+        "<p>A desktop PDF reader and page editor built with Qt 6 and MuPDF.</p>"
+        "<p>Licensed under the GNU Affero General Public License v3.0.<br>"
+        "Source code: <a href=\"https://github.com/genecc04/offline-pdf-reader-editor\">"
+        "github.com/genecc04/offline-pdf-reader-editor</a></p>"
+        "<p>Uses MuPDF (Artifex Software, Inc.) and Qt.</p>");
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (!droppedPdf(event->mimeData()).isEmpty())
+        event->acceptProposedAction();
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    const QString path = droppedPdf(event->mimeData());
+    if (path.isEmpty())
+        return;
+
+    event->acceptProposedAction();
+    QTimer::singleShot(0, this, [this, path]() { openPath(path); });
+}
+
+// saving, editing
 
 bool MainWindow::saveAs()
 {
@@ -441,7 +580,7 @@ void MainWindow::deleteSelectedPages()
     for (int i = pages.size() - 1; i >= 0; --i) {
         if (!m_editor->deletePage(pages.at(i))) {
             QMessageBox::warning(this, "Delete failed", m_editor->lastError());
-            reopenEditor(m_history.current());
+            reopenEditor(m_history.current());   // throw away the half-finished edit
             updateActions();
             return;
         }
@@ -554,6 +693,7 @@ void MainWindow::stepHistory(const QString &path)
     updateTitle();
 }
 
+// document state
 bool MainWindow::confirmDiscard()
 {
     if (!m_history.isModified())
@@ -572,10 +712,15 @@ bool MainWindow::confirmDiscard()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    if (confirmDiscard())
-        event->accept();
-    else
+    if (!confirmDiscard()) {
         event->ignore();
+        return;
+    }
+
+    QSettings settings;
+    settings.setValue("window/geometry", saveGeometry());
+    settings.setValue("window/state", saveState());
+    event->accept();
 }
 
 void MainWindow::updateTitle()
