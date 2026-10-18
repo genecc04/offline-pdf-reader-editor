@@ -298,15 +298,33 @@ void MainWindow::goToPage(int page)
     nav->jump(page, {}, nav->currentZoom());
 }
 
-bool MainWindow::showFile(const QString &path, int page)
+bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
 {
-    m_document->setPassword(m_password);   // snapshots keep the original's password
-    if (m_document->load(path) != QPdfDocument::Error::None) {
-        QMessageBox::warning(this, "Error", "Could not display the document.");
+    m_document->close();
+    m_document->setPassword(m_password);
+
+    const QPdfDocument::Error error = m_document->load(path);
+    if (error != QPdfDocument::Error::None) {
+        if (reportErrors) {
+            QString reason;
+            switch (error) {
+            case QPdfDocument::Error::IncorrectPassword:
+                reason = "incorrect password"; break;
+            case QPdfDocument::Error::InvalidFileFormat:
+                reason = "invalid file format"; break;
+            case QPdfDocument::Error::UnsupportedSecurityScheme:
+                reason = "unsupported security scheme"; break;
+            case QPdfDocument::Error::FileNotFound:
+                reason = "file not found"; break;
+            default:
+                reason = "unknown error"; break;
+            }
+            QMessageBox::warning(this, "Error",
+                                 QString("Could not display the document (%1).").arg(reason));
+        }
         return false;
     }
 
-    // The page count can change (delete, insert, undo), so keep the page in range.
     const int target = qBound(0, page, m_document->pageCount() - 1);
     goToPage(target);
     m_thumbnails->setCurrentPage(target);
@@ -361,6 +379,8 @@ bool MainWindow::refreshAfterEdit(int page, const QList<int> &reselect)
     }
 
     if (!showFile(newPath, page)) {
+        QFile::remove(newPath);
+        showFile(m_history.current(), page, false);
         reopenEditor(m_history.current());
         updateActions();
         return false;
@@ -468,7 +488,6 @@ void MainWindow::extractPages()
         return;
     }
 
-    // Work on a separate copy of the current state, so the open document is untouched.
     PdfEditor extractor;
     if (!extractor.open(m_history.current(), m_password)
         || !extractor.keepOnlyPages(dialog.firstPage(), dialog.lastPage())

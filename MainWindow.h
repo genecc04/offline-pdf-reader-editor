@@ -41,7 +41,7 @@ private:
     void openFile();
     bool saveAs();
     void goToPage(int page);
-    bool showFile(const QString &path, int page);
+    bool showFile(const QString &path, int page, bool reportErrors = true);
 
     // editing
     void rotateSelectedPages(int degrees);
