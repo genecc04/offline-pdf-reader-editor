@@ -4,6 +4,7 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <memory>
+#include <QList>
 
 #include "EditHistory.h"
 #include "PdfEditor.h"
@@ -43,12 +44,13 @@ private:
     bool showFile(const QString &path, int page);
 
     // editing
-    void rotateCurrentPage(int degrees);
+    void rotateSelectedPages(int degrees);
+    void deleteSelectedPages();
     void movePage(int from, int to);
     void extractPages();
     void insertPages();
-    void deleteCurrentPage();
-    bool refreshAfterEdit(int page);
+    bool refreshAfterEdit(int page, const QList<int> &reselect = {});
+    QList<int> targetPages() const;
     void undo();
     void redo();
     void stepHistory(const QString &path);

@@ -1,4 +1,5 @@
 #pragma once
+#include <QList>
 #include <QListView>
 
 class QDropEvent;
@@ -15,12 +16,16 @@ public:
     void setCurrentPage(int page);
     void setReorderEnabled(bool enabled);
 
+    QList<int> selectedPages() const;
+    void selectPages(const QList<int> &pages);
+
 signals:
     void pageRequested(int page);
     void pageMoveRequested(int from, int to);
 
 protected:
     void dropEvent(QDropEvent *event) override;
+    void startDrag(Qt::DropActions supportedActions) override;
 
 private:
     ThumbnailModel *m_model = nullptr;

@@ -5,6 +5,8 @@
 #include <QItemSelectionModel>
 #include <QMimeData>
 
+#include <algorithm>
+
 ThumbnailPane::ThumbnailPane(QWidget *parent)
     : QListView(parent)
 {
@@ -15,6 +17,8 @@ ThumbnailPane::ThumbnailPane(QWidget *parent)
     setIconSize(QSize(ThumbnailModel::kThumbWidth, ThumbnailModel::kThumbHeight));
     setSpacing(8);
     setUniformItemSizes(true);
+
+    setSelectionMode(QAbstractItemView::ExtendedSelection);
 
     setDragDropMode(QAbstractItemView::NoDragDrop);
     setDropIndicatorShown(true);
@@ -40,7 +44,13 @@ void ThumbnailPane::setCurrentPage(int page)
         return;
 
     m_syncing = true;
-    setCurrentIndex(index);
+
+    const bool alreadySelected = selectionModel()->isSelected(index);
+    selectionModel()->setCurrentIndex(index,
+        alreadySelected ? QItemSelectionModel::NoUpdate
+                        : QItemSelectionModel::ClearAndSelect);
+    scrollTo(index);
+
     m_syncing = false;
 }
 
@@ -48,6 +58,34 @@ void ThumbnailPane::setReorderEnabled(bool enabled)
 {
     setDragDropMode(enabled ? QAbstractItemView::InternalMove
                             : QAbstractItemView::NoDragDrop);
+}
+
+QList<int> ThumbnailPane::selectedPages() const
+{
+    QList<int> pages;
+    const QModelIndexList indexes = selectionModel()->selectedIndexes();
+    for (const QModelIndex &index : indexes)
+        pages << index.row();
+    std::sort(pages.begin(), pages.end());
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+    return pages;
+}
+
+void ThumbnailPane::selectPages(const QList<int> &pages)
+{
+    selectionModel()->clearSelection();
+    for (int page : pages) {
+        const QModelIndex index = m_model->index(page);
+        if (index.isValid())
+            selectionModel()->select(index, QItemSelectionModel::Select);
+    }
+}
+
+void ThumbnailPane::startDrag(Qt::DropActions supportedActions)
+{
+    if (selectionModel()->selectedIndexes().size() != 1)
+        return;
+    QListView::startDrag(supportedActions);
 }
 
 void ThumbnailPane::dropEvent(QDropEvent *event)

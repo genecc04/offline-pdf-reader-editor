@@ -123,11 +123,11 @@ void MainWindow::setupToolbar()
     // Editing
     m_rotateLeftAction = toolbar->addAction("Rotate left");
     m_rotateRightAction = toolbar->addAction("Rotate right");
-    connect(m_rotateLeftAction, &QAction::triggered, this, [this]() { rotateCurrentPage(-90); });
-    connect(m_rotateRightAction, &QAction::triggered, this, [this]() { rotateCurrentPage(90); });
+    connect(m_rotateLeftAction, &QAction::triggered, this, [this]() { rotateSelectedPages(-90); });
+    connect(m_rotateRightAction, &QAction::triggered, this, [this]() { rotateSelectedPages(90); });
 
-    m_deletePageAction = toolbar->addAction("Delete page");
-    connect(m_deletePageAction, &QAction::triggered, this, &MainWindow::deleteCurrentPage);
+    m_deletePageAction = toolbar->addAction("Delete pages");
+    connect(m_deletePageAction, &QAction::triggered, this, &MainWindow::deleteSelectedPages);
 
     // Wiring
     QPdfPageNavigator *nav = m_view->pageNavigator();
@@ -342,7 +342,7 @@ bool MainWindow::saveAs()
     return true;
 }
 
-bool MainWindow::refreshAfterEdit(int page)
+bool MainWindow::refreshAfterEdit(int page, const QList<int> &reselect)
 {
     if (!m_tempDir.isValid()) {
         QMessageBox::warning(this, "Edit failed", "Could not create a temporary folder.");
@@ -366,6 +366,9 @@ bool MainWindow::refreshAfterEdit(int page)
         return false;
     }
 
+    if (!reselect.isEmpty())
+        m_thumbnails->selectPages(reselect);
+
     removeSnapshots(m_history.push(newPath));
     reopenEditor(newPath);
     updateActions();
@@ -373,40 +376,60 @@ bool MainWindow::refreshAfterEdit(int page)
     return true;
 }
 
-void MainWindow::rotateCurrentPage(int degrees)
+QList<int> MainWindow::targetPages() const
 {
-    if (!m_editor)
-        return;
-
-    const int page = m_view->pageNavigator()->currentPage();
-
-    if (!m_editor->rotatePage(page, degrees)) {
-        QMessageBox::warning(this, "Rotate failed", m_editor->lastError());
-        return;
-    }
-    refreshAfterEdit(page);
+    QList<int> pages = m_thumbnails->selectedPages();
+    if (pages.isEmpty())
+        pages << m_view->pageNavigator()->currentPage();
+    return pages;
 }
 
-void MainWindow::deleteCurrentPage()
+void MainWindow::rotateSelectedPages(int degrees)
 {
     if (!m_editor)
         return;
 
+    const QList<int> pages = targetPages();
+    const int viewPage = m_view->pageNavigator()->currentPage();
+
+    for (int page : pages) {
+        if (!m_editor->rotatePage(page, degrees)) {
+            QMessageBox::warning(this, "Rotate failed", m_editor->lastError());
+            reopenEditor(m_history.current());
+            updateActions();
+            return;
+        }
+    }
+
+    if (refreshAfterEdit(viewPage, pages))
+        statusBar()->showMessage(QString("Rotated %1 page(s)").arg(pages.size()), 3000);
+}
+
+void MainWindow::deleteSelectedPages()
+{
+    if (!m_editor)
+        return;
+
+    const QList<int> pages = targetPages();
     const int pageCount = m_document->pageCount();
-    if (pageCount <= 1) {
-        QMessageBox::information(this, "Delete page",
+    if (pages.size() >= pageCount) {
+        QMessageBox::information(this, "Delete pages",
                                  "A PDF must keep at least one page.");
         return;
     }
 
-    const int page = m_view->pageNavigator()->currentPage();
-
-    if (!m_editor->deletePage(page)) {
-        QMessageBox::warning(this, "Delete failed", m_editor->lastError());
-        return;
+    for (int i = pages.size() - 1; i >= 0; --i) {
+        if (!m_editor->deletePage(pages.at(i))) {
+            QMessageBox::warning(this, "Delete failed", m_editor->lastError());
+            reopenEditor(m_history.current());
+            updateActions();
+            return;
+        }
     }
 
-    refreshAfterEdit(qMin(page, pageCount - 2));
+    const int landing = qMin(pages.first(), pageCount - pages.size() - 1);
+    if (refreshAfterEdit(landing))
+        statusBar()->showMessage(QString("Deleted %1 page(s)").arg(pages.size()), 3000);
 }
 
 void MainWindow::movePage(int from, int to)
