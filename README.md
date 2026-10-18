@@ -1,15 +1,23 @@
 # Offline PDF Reader/Editor
 
-A desktop PDF reader (and, in progress, editor) built with C++ and Qt 6.
+A desktop PDF reader and page editor built with C++ and Qt 6.
 
 ## Features
 
+Reading:
 - Open PDFs, including password-protected files
 - Page navigation and zoom (in, out, fit width, fit page)
 - Page thumbnails, rendered on demand
 - Full-text search with highlighted results
 - Bookmarks / table of contents
-- Save a copy of the open PDF (File > Save As)
+
+Editing:
+- Rotate or delete the current page
+- Reorder pages by dragging thumbnails
+- Extract a page range to a new PDF
+- Insert pages from another PDF (also works for merging)
+- Undo and redo
+- Save the edited PDF as a new file (File > Save As)
 
 More editing features are in development.
 

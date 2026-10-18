@@ -330,8 +330,9 @@ bool MainWindow::saveAs()
         return false;
     }
 
-    if (!m_editor->saveAs(dest)) {
-        QMessageBox::warning(this, "Save failed", m_editor->lastError());
+    PdfEditor saver;
+    if (!saver.open(m_history.current(), m_password) || !saver.saveAs(dest, true)) {
+        QMessageBox::warning(this, "Save failed", saver.lastError());
         return false;
     }
 
