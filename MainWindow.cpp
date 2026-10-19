@@ -201,6 +201,11 @@ void MainWindow::setupMenus()
     m_redoAction->setShortcut(QKeySequence::Redo);
     connect(m_redoAction, &QAction::triggered, this, &MainWindow::redo);
 
+    editMenu->addSeparator();
+    m_highlightAction = editMenu->addAction("&Highlight text...");
+    m_highlightAction->setShortcut(Qt::CTRL | Qt::Key_H);
+    connect(m_highlightAction, &QAction::triggered, this, &MainWindow::highlightText);
+
     QMenu *viewMenu = menuBar()->addMenu("&View");
     QAction *togglePages = m_pagesDock->toggleViewAction();
     togglePages->setShortcut(Qt::Key_F4);
@@ -323,11 +328,13 @@ void MainWindow::loadDocument(const QString &path)
 {
     m_editor.reset();
     m_document->close();
+    removeDisplayCopy();
     removeSnapshots(m_history.states());
     m_history.clear();
     m_currentPath.clear();
     m_password.clear();
     m_displayName.clear();
+    m_hasAnnotations = false;
     updateActions();
 
     m_document->setPassword(QString());
@@ -369,6 +376,14 @@ void MainWindow::loadDocument(const QString &path)
     if (!m_tempDir.isValid() || !reopenEditor(path))
         statusBar()->showMessage("Editing is not available for this file.", 5000);
 
+    if (m_editor && m_tempDir.isValid()) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        m_hasAnnotations = m_editor->hasAnnotations();
+        QApplication::restoreOverrideCursor();
+        if (m_hasAnnotations)
+            showFile(path, 0, false);
+    }
+
     updateActions();
     updateTitle();
 }
@@ -383,11 +398,26 @@ void MainWindow::goToPage(int page)
 
 bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
 {
+    QString toLoad = path;
+    QString newDisplay;
+    if (m_hasAnnotations && m_tempDir.isValid()) {
+        const QString candidate = m_tempDir.filePath(
+            QString("display-%1.pdf").arg(++m_displayCount));
+        if (makeDisplayCopy(path, candidate)) {
+            newDisplay = candidate;
+            toLoad = candidate;
+        } else {
+            QFile::remove(candidate);
+        }
+    }
+
     m_document->close();
     m_document->setPassword(m_password);
 
-    const QPdfDocument::Error error = m_document->load(path);
+    const QPdfDocument::Error error = m_document->load(toLoad);
     if (error != QPdfDocument::Error::None) {
+        if (!newDisplay.isEmpty())
+            QFile::remove(newDisplay);
         if (reportErrors) {
             QString reason;
             switch (error) {
@@ -408,10 +438,28 @@ bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
         return false;
     }
 
+    removeDisplayCopy();
+    m_displayPath = newDisplay;
+
     const int target = qBound(0, page, m_document->pageCount() - 1);
     goToPage(target);
     m_thumbnails->setCurrentPage(target);
     return true;
+}
+
+bool MainWindow::makeDisplayCopy(const QString &source, const QString &target)
+{
+    PdfEditor baker;
+    return baker.open(source, m_password)
+        && baker.bakeAnnotations()
+        && baker.saveAs(target);
+}
+
+void MainWindow::removeDisplayCopy()
+{
+    if (!m_displayPath.isEmpty() && isTempFile(m_displayPath))
+        QFile::remove(m_displayPath);
+    m_displayPath.clear();
 }
 
 // recent files, about, drops
@@ -813,6 +861,7 @@ void MainWindow::updateActions()
     m_rotateRightAction->setEnabled(editable);
     m_deletePageAction->setEnabled(editable);
     m_thumbnails->setReorderEnabled(editable);
+    m_highlightAction->setEnabled(editable);
 
     m_undoAction->setEnabled(editable && m_history.canUndo());
     m_redoAction->setEnabled(editable && m_history.canRedo());
@@ -842,4 +891,41 @@ bool MainWindow::isTempFile(const QString &path) const
         return false;
     const QString folder = QDir::cleanPath(m_tempDir.path()) + '/';
     return QDir::cleanPath(path).startsWith(folder);
+}
+
+void MainWindow::highlightText()
+{
+    if (!m_editor)
+        return;
+
+    bool ok = false;
+    const QString text = QInputDialog::getText(
+        this, "Highlight text", "Highlight every occurrence of:",
+        QLineEdit::Normal, QString(), &ok);
+    if (!ok || text.trimmed().isEmpty())
+        return;
+
+    const int page = m_view->pageNavigator()->currentPage();
+    int pagesChanged = 0;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool done = m_editor->highlightText(text.trimmed(), &pagesChanged);
+    QApplication::restoreOverrideCursor();
+
+    if (!done) {
+        QMessageBox::warning(this, "Highlight failed", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return;
+    }
+    if (pagesChanged == 0) {
+        statusBar()->showMessage("No matches found.", 4000);
+        return;
+    }
+    
+    m_hasAnnotations = true;
+
+    if (refreshAfterEdit(page))
+        statusBar()->showMessage(
+            QString("Highlighted text on %1 page(s)").arg(pagesChanged), 4000);
 }

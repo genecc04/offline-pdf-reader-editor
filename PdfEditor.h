@@ -20,6 +20,9 @@ public:
     bool movePage(int fromIndex, int toIndex);
     bool insertPagesFrom(const QString &sourcePath, int insertAt);
     bool deletePage(int pageIndex);
+    bool highlightText(const QString &text, int *pagesChanged = nullptr);
+    bool bakeAnnotations();
+    bool hasAnnotations();
     void close();
 
     QString lastError() const { return m_error; }

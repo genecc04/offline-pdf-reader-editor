@@ -3,6 +3,7 @@
 #include <QPdfDocument>
 #include <QPainter>
 #include <QMimeData>
+#include <QPdfDocumentRenderOptions>
 
 ThumbnailModel::ThumbnailModel(QObject *parent)
     : QAbstractListModel(parent)
@@ -60,7 +61,9 @@ QPixmap ThumbnailModel::renderThumbnail(int page) const
     const QSize size(qMax(1, int(pts.width() * scale)),
                      qMax(1, int(pts.height() * scale)));
 
-    const QImage rendered = m_document->render(page, size);
+    QPdfDocumentRenderOptions options;
+    options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
+    const QImage rendered = m_document->render(page, size, options);
 
     QImage canvas(rendered.size(), QImage::Format_RGB32);
     canvas.fill(Qt::white);

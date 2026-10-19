@@ -52,6 +52,8 @@ private:
     void goToPage(int page);
     bool showFile(const QString &path, int page, bool reportErrors = true);
     void addRecentFile(const QString &path);
+    bool makeDisplayCopy(const QString &source, const QString &target);
+    void removeDisplayCopy();
     void updateRecentMenu();
     void showAbout();
 
@@ -66,6 +68,7 @@ private:
     void undo();
     void redo();
     void stepHistory(const QString &path);
+    void highlightText();
 
     // document state
     bool confirmDiscard();
@@ -96,6 +99,7 @@ private:
     QAction *m_rotateLeftAction = nullptr;
     QAction *m_rotateRightAction = nullptr;
     QAction *m_deletePageAction = nullptr;
+    QAction *m_highlightAction = nullptr;
 
     std::unique_ptr<PdfEditor> m_editor;
     EditHistory m_history;
@@ -103,5 +107,8 @@ private:
     QString m_currentPath;
     QString m_displayName;
     QString m_password;
+    QString m_displayPath;
+    int m_displayCount = 0;
+    bool m_hasAnnotations = false;
     int m_editCount = 0;
 };

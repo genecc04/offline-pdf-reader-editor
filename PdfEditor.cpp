@@ -271,3 +271,142 @@ bool PdfEditor::insertPagesFrom(const QString &sourcePath, int insertAt)
     }
     return true;
 }
+
+bool PdfEditor::highlightText(const QString &text, int *pagesChanged)
+{
+    if (pagesChanged)
+        *pagesChanged = 0;
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (text.trimmed().isEmpty()) {
+        m_error = "Nothing to search for.";
+        return false;
+    }
+
+    const QByteArray needleUtf8 = text.toUtf8();
+    const char *needle = needleUtf8.constData();
+
+    int count = 0;
+    fz_var(count);
+    fz_try(m_ctx)
+    {
+        count = pdf_count_pages(m_ctx, m_doc);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+
+    // Buffers for the search results, allocated outside any fz_try block.
+    constexpr int kMaxHits = 512;                 // per page
+    std::vector<fz_quad> quads(kMaxHits);
+    std::vector<int> marks(kMaxHits);
+    int changed = 0;
+
+    for (int pageIndex = 0; pageIndex < count; ++pageIndex) {
+        pdf_page *page = nullptr;
+        int hits = 0;
+        fz_var(page);
+        fz_var(hits);
+
+        fz_try(m_ctx)
+        {
+            page = pdf_load_page(m_ctx, m_doc, pageIndex);
+            hits = fz_search_page(m_ctx, &page->super, needle,
+                                  marks.data(), quads.data(), kMaxHits);
+            if (hits > 0) {
+                // One yellow highlight per page, covering every match on it.
+                pdf_annot *annot = pdf_create_annot(m_ctx, page, PDF_ANNOT_HIGHLIGHT);
+                const float yellow[3] = { 1.0f, 0.92f, 0.0f };
+                pdf_set_annot_color(m_ctx, annot, 3, yellow);
+                pdf_set_annot_quad_points(m_ctx, annot, hits, quads.data());
+                pdf_update_annot(m_ctx, annot);
+            }
+        }
+        fz_always(m_ctx)
+        {
+            if (page)
+                fz_drop_page(m_ctx, &page->super);
+        }
+        fz_catch(m_ctx)
+        {
+            m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+            return false;
+        }
+
+        if (hits > 0)
+            ++changed;
+    }
+
+    if (pagesChanged)
+        *pagesChanged = changed;
+    return true;
+}
+
+bool PdfEditor::bakeAnnotations()
+{
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+
+    fz_try(m_ctx)
+    {
+        // Draw annotations into the page content (form fields are left alone).
+        pdf_bake_document(m_ctx, m_doc, 1, 0);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
+}
+
+bool PdfEditor::hasAnnotations()
+{
+    if (!m_doc)
+        return false;
+
+    int count = 0;
+    fz_var(count);
+    fz_try(m_ctx)
+    {
+        count = pdf_count_pages(m_ctx, m_doc);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        pdf_page *page = nullptr;
+        bool found = false;
+        fz_var(page);
+        fz_var(found);
+
+        fz_try(m_ctx)
+        {
+            page = pdf_load_page(m_ctx, m_doc, i);
+            found = (pdf_first_annot(m_ctx, page) != nullptr);
+        }
+        fz_always(m_ctx)
+        {
+            if (page)
+                fz_drop_page(m_ctx, &page->super);
+        }
+        fz_catch(m_ctx)
+        {
+            m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+            return false;
+        }
+
+        if (found)
+            return true;
+    }
+    return false;
+}
