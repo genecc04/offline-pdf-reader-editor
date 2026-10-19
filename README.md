@@ -18,6 +18,7 @@ Editing:
 - Extract a page range to a new PDF
 - Insert pages from another PDF (also works for merging)
 - Undo and redo
+- Highlights and Annotations
 - Save the edited PDF as a new file (File > Save As)
 - Save in place (Ctrl+S) or save a copy (File > Save As)
 
