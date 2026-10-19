@@ -47,6 +47,7 @@ private:
     // file and viewing
     void openFile();
     void loadDocument(const QString &path);
+    bool save();
     bool saveAs();
     void goToPage(int page);
     bool showFile(const QString &path, int page, bool reportErrors = true);
@@ -87,6 +88,7 @@ private:
     QMenu *m_recentMenu = nullptr;
 
     QAction *m_saveAsAction = nullptr;
+    QAction *m_saveAction = nullptr;
     QAction *m_extractAction = nullptr;
     QAction *m_insertAction = nullptr;
     QAction *m_undoAction = nullptr;

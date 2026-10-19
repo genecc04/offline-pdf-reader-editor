@@ -19,6 +19,7 @@ Editing:
 - Insert pages from another PDF (also works for merging)
 - Undo and redo
 - Save the edited PDF as a new file (File > Save As)
+- Save in place (Ctrl+S) or save a copy (File > Save As)
 
 More editing features are in development.
 

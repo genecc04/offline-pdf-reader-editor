@@ -39,7 +39,6 @@ namespace {
 
     constexpr int kMaxRecentFiles = 8;
 
-    // The first local .pdf file in a drag, or an empty string.
     QString droppedPdf(const QMimeData *mime)
     {
         if (!mime->hasUrls())
@@ -50,6 +49,24 @@ namespace {
                 return url.toLocalFile();
         }
         return QString();
+    }
+
+    bool replaceFile(const QString &source, const QString &target, QString *error)
+    {
+        const QString backup = target + ".pdfapp-bak";
+        QFile::remove(backup);                       // a leftover from an earlier crash
+
+        if (!QFile::rename(target, backup)) {
+            *error = "Could not replace the original file. Is it open in another program?";
+            return false;
+        }
+        if (!QFile::rename(source, target)) {
+            QFile::rename(backup, target);           // put the original back
+            *error = "Could not write the new file.";
+            return false;
+        }
+        QFile::remove(backup);
+        return true;
     }
 
 }
@@ -160,6 +177,10 @@ void MainWindow::setupMenus()
     updateRecentMenu();
 
     fileMenu->addSeparator();
+
+    m_saveAction = fileMenu->addAction("&Save");
+    m_saveAction->setShortcut(QKeySequence::Save);
+    connect(m_saveAction, &QAction::triggered, this, &MainWindow::save);
 
     m_saveAsAction = fileMenu->addAction("Save &As...");
     m_saveAsAction->setShortcut(QKeySequence::SaveAs);
@@ -494,8 +515,57 @@ bool MainWindow::saveAs()
     }
 
     m_history.markSaved();
+    updateActions();
     updateTitle();
     statusBar()->showMessage("Saved " + QFileInfo(dest).fileName(), 4000);
+    return true;
+}
+
+bool MainWindow::save()
+{
+    if (!m_editor || !m_history.isModified())
+        return true;
+
+    const QString target = m_currentPath;
+    if (!QFileInfo(target).isWritable()) {
+        QMessageBox::warning(this, "Save",
+                             "This file is read-only. Use Save As to save a copy.");
+        return false;
+    }
+
+    const QString tmp = target + ".pdfapp-tmp";
+    const int page = m_view->pageNavigator()->currentPage();
+
+    {
+        PdfEditor saver;
+        if (!saver.open(m_history.current(), m_password) || !saver.saveAs(tmp, true)) {
+            QFile::remove(tmp);
+            QMessageBox::warning(this, "Save failed", saver.lastError());
+            return false;
+        }
+    }
+
+    m_editor.reset();
+    m_document->close();
+
+    // 3. Swap the new file in.
+    QString error;
+    if (!replaceFile(tmp, target, &error)) {
+        QFile::remove(tmp);
+        showFile(m_history.current(), page, false);
+        reopenEditor(m_history.current());
+        updateActions();
+        QMessageBox::warning(this, "Save failed", error);
+        return false;
+    }
+
+    removeSnapshots(m_history.states());
+    m_history.reset(target);
+    showFile(target, page);
+    reopenEditor(target);
+    updateActions();
+    updateTitle();
+    statusBar()->showMessage("Saved " + m_displayName, 4000);
     return true;
 }
 
@@ -706,7 +776,7 @@ bool MainWindow::confirmDiscard()
         QMessageBox::Save);
 
     if (answer == QMessageBox::Save)
-        return saveAs();
+        return save();
     return answer == QMessageBox::Discard;
 }
 
@@ -736,6 +806,7 @@ void MainWindow::updateActions()
     const bool editable = (m_editor != nullptr);
 
     m_saveAsAction->setEnabled(editable);
+    m_saveAction->setEnabled(editable && m_history.isModified());
     m_extractAction->setEnabled(editable);
     m_insertAction->setEnabled(editable);
     m_rotateLeftAction->setEnabled(editable);
