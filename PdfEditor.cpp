@@ -300,8 +300,7 @@ bool PdfEditor::highlightText(const QString &text, int *pagesChanged)
         return false;
     }
 
-    // Buffers for the search results, allocated outside any fz_try block.
-    constexpr int kMaxHits = 512;                 // per page
+    constexpr int kMaxHits = 512;
     std::vector<fz_quad> quads(kMaxHits);
     std::vector<int> marks(kMaxHits);
     int changed = 0;
@@ -409,4 +408,47 @@ bool PdfEditor::hasAnnotations()
             return true;
     }
     return false;
+}
+
+bool PdfEditor::addTextBox(int pageIndex, const QRectF &box, const QString &text,
+                           const QString &fontName, double fontSize,
+                           float red, float green, float blue)
+{
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+
+    const QByteArray textUtf8 = text.toUtf8();
+    const QByteArray fontUtf8 = fontName.toUtf8();
+    const char *cText = textUtf8.constData();
+    const char *cFont = fontUtf8.constData();
+    const float color[3] = { red, green, blue };
+    const fz_rect rect = fz_make_rect(float(box.left()), float(box.top()),
+                                      float(box.right()), float(box.bottom()));
+
+    pdf_page *page = nullptr;
+    fz_var(page);
+
+    fz_try(m_ctx)
+    {
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+
+        pdf_annot *annot = pdf_create_annot(m_ctx, page, PDF_ANNOT_FREE_TEXT);
+        pdf_set_annot_rect(m_ctx, annot, rect);
+        pdf_set_annot_default_appearance(m_ctx, annot, cFont, float(fontSize), 3, color);
+        pdf_set_annot_contents(m_ctx, annot, cText);
+        pdf_update_annot(m_ctx, annot);
+    }
+    fz_always(m_ctx)
+    {
+        if (page)
+            fz_drop_page(m_ctx, &page->super);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
 }

@@ -8,6 +8,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QDragEnterEvent>
@@ -23,8 +24,6 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPdfDocument>
-#include <QPdfPageNavigator>
-#include <QPdfView>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -54,14 +53,14 @@ namespace {
     bool replaceFile(const QString &source, const QString &target, QString *error)
     {
         const QString backup = target + ".pdfapp-bak";
-        QFile::remove(backup);                       // a leftover from an earlier crash
+        QFile::remove(backup);
 
         if (!QFile::rename(target, backup)) {
             *error = "Could not replace the original file. Is it open in another program?";
             return false;
         }
         if (!QFile::rename(source, target)) {
-            QFile::rename(backup, target);           // put the original back
+            QFile::rename(backup, target);
             *error = "Could not write the new file.";
             return false;
         }
@@ -80,6 +79,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupBookmarkPane();
     setupMenus();
     setupToolbar();
+    setupTextToolbar();
     updateActions();
 
     setAcceptDrops(true);
@@ -95,11 +95,15 @@ void MainWindow::setupViewer()
 {
     m_document = new QPdfDocument(this);
 
-    m_view = new QPdfView(this);
+    m_view = new PageView(this);
     m_view->setDocument(m_document);
-    m_view->setPageMode(QPdfView::PageMode::MultiPage);
-    m_view->setZoomMode(QPdfView::ZoomMode::FitToWidth);
+    m_view->setZoomMode(PageView::ZoomMode::FitToWidth);
     setCentralWidget(m_view);
+
+    connect(m_view, &PageView::textPlaced, this, &MainWindow::placeText);
+    connect(m_view, &PageView::textToolFinished, this, [this]() {
+        m_addTextAction->setChecked(false);
+    });
 }
 
 void MainWindow::setupThumbnailPane()
@@ -115,7 +119,7 @@ void MainWindow::setupThumbnailPane()
     addDockWidget(Qt::LeftDockWidgetArea, m_pagesDock);
 
     connect(m_thumbnails, &ThumbnailPane::pageRequested, this, &MainWindow::goToPage);
-    connect(m_view->pageNavigator(), &QPdfPageNavigator::currentPageChanged,
+    connect(m_view, &PageView::currentPageChanged,
             m_thumbnails, &ThumbnailPane::setCurrentPage);
 
     connect(m_thumbnails, &ThumbnailPane::pageMoveRequested, this,
@@ -139,8 +143,7 @@ void MainWindow::setupSearchPane()
 
     connect(m_search, &SearchPane::resultSelected, this,
             [this](int index, int page, QPointF location) {
-                QPdfPageNavigator *nav = m_view->pageNavigator();
-                nav->jump(page, location, nav->currentZoom());
+                m_view->jumpToPage(page, location);
                 m_view->setCurrentSearchResultIndex(index);
             });
 }
@@ -161,8 +164,7 @@ void MainWindow::setupBookmarkPane()
 
     connect(m_bookmarks, &BookmarkPane::bookmarkSelected, this,
             [this](int page, QPointF location) {
-                QPdfPageNavigator *nav = m_view->pageNavigator();
-                nav->jump(page, location, nav->currentZoom());
+                m_view->jumpToPage(page, location);
             });
 }
 
@@ -202,9 +204,21 @@ void MainWindow::setupMenus()
     connect(m_redoAction, &QAction::triggered, this, &MainWindow::redo);
 
     editMenu->addSeparator();
+
     m_highlightAction = editMenu->addAction("&Highlight text...");
     m_highlightAction->setShortcut(Qt::CTRL | Qt::Key_H);
     connect(m_highlightAction, &QAction::triggered, this, &MainWindow::highlightText);
+
+    m_addTextAction = editMenu->addAction("Add &text");
+    m_addTextAction->setCheckable(true);
+    m_addTextAction->setShortcut(Qt::CTRL | Qt::Key_T);
+    connect(m_addTextAction, &QAction::toggled, this, [this](bool on) {
+        m_view->setTextToolActive(on);
+        if (on)
+            statusBar()->showMessage(
+                "Drag a box on the page, type your text, then click elsewhere to place it "
+                "(Ctrl+Enter also places it, Esc cancels).", 10000);
+    });
 
     QMenu *viewMenu = menuBar()->addMenu("&View");
     QAction *togglePages = m_pagesDock->toggleViewAction();
@@ -265,18 +279,16 @@ void MainWindow::setupToolbar()
     connect(m_deletePageAction, &QAction::triggered, this, &MainWindow::deleteSelectedPages);
 
     // Wiring
-    QPdfPageNavigator *nav = m_view->pageNavigator();
-
-    connect(prevAction, &QAction::triggered, this, [this, nav]() {
-        goToPage(nav->currentPage() - 1);
+    connect(prevAction, &QAction::triggered, this, [this]() {
+        goToPage(m_view->currentPage() - 1);
     });
-    connect(nextAction, &QAction::triggered, this, [this, nav]() {
-        goToPage(nav->currentPage() + 1);
+    connect(nextAction, &QAction::triggered, this, [this]() {
+        goToPage(m_view->currentPage() + 1);
     });
     connect(m_pageBox, &QSpinBox::valueChanged, this, [this](int value) {
         goToPage(value - 1);
     });
-    connect(nav, &QPdfPageNavigator::currentPageChanged, this, [this](int page) {
+    connect(m_view, &PageView::currentPageChanged, this, [this](int page) {
         QSignalBlocker blocker(m_pageBox);
         m_pageBox->setValue(page + 1);
     });
@@ -287,19 +299,60 @@ void MainWindow::setupToolbar()
     });
 
     connect(zoomInAction, &QAction::triggered, this, [this]() {
-        m_view->setZoomMode(QPdfView::ZoomMode::Custom);
         m_view->setZoomFactor(m_view->zoomFactor() * 1.25);
     });
     connect(zoomOutAction, &QAction::triggered, this, [this]() {
-        m_view->setZoomMode(QPdfView::ZoomMode::Custom);
         m_view->setZoomFactor(m_view->zoomFactor() / 1.25);
     });
     connect(fitWidthAction, &QAction::triggered, this, [this]() {
-        m_view->setZoomMode(QPdfView::ZoomMode::FitToWidth);
+        m_view->setZoomMode(PageView::ZoomMode::FitToWidth);
     });
     connect(fitPageAction, &QAction::triggered, this, [this]() {
-        m_view->setZoomMode(QPdfView::ZoomMode::FitInView);
+        m_view->setZoomMode(PageView::ZoomMode::FitInView);
     });
+}
+
+void MainWindow::setupTextToolbar()
+{
+    addToolBarBreak();
+    QToolBar *toolbar = addToolBar("Text");
+    toolbar->setObjectName("textToolbar");
+    toolbar->setMovable(false);
+
+    toolbar->addAction(m_addTextAction);
+
+    auto *font = new QComboBox(this);
+    font->addItem("Helvetica", "Helv");
+    font->addItem("Times", "TiRo");
+    font->addItem("Courier", "Cour");
+    font->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(font);
+
+    auto *size = new QSpinBox(this);
+    size->setRange(6, 72);
+    size->setValue(12);
+    size->setSuffix(" pt");
+    size->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(size);
+
+    auto *color = new QComboBox(this);
+    color->addItem("Black", QColor(0, 0, 0));
+    color->addItem("Blue", QColor(0, 51, 204));
+    color->addItem("Red", QColor(204, 0, 0));
+    color->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(color);
+
+    auto applyStyle = [this, font, size, color]() {
+        PageView::TextStyle style;
+        style.pdfFont = font->currentData().toString();
+        style.sizePoints = size->value();
+        style.color = color->currentData().value<QColor>();
+        m_view->setTextStyle(style);
+    };
+    connect(font, &QComboBox::currentIndexChanged, this, applyStyle);
+    connect(size, &QSpinBox::valueChanged, this, applyStyle);
+    connect(color, &QComboBox::currentIndexChanged, this, applyStyle);
+    applyStyle();
 }
 
 // opening files
@@ -328,13 +381,11 @@ void MainWindow::loadDocument(const QString &path)
 {
     m_editor.reset();
     m_document->close();
-    removeDisplayCopy();
     removeSnapshots(m_history.states());
     m_history.clear();
     m_currentPath.clear();
     m_password.clear();
     m_displayName.clear();
-    m_hasAnnotations = false;
     updateActions();
 
     m_document->setPassword(QString());
@@ -376,14 +427,6 @@ void MainWindow::loadDocument(const QString &path)
     if (!m_tempDir.isValid() || !reopenEditor(path))
         statusBar()->showMessage("Editing is not available for this file.", 5000);
 
-    if (m_editor && m_tempDir.isValid()) {
-        QApplication::setOverrideCursor(Qt::WaitCursor);
-        m_hasAnnotations = m_editor->hasAnnotations();
-        QApplication::restoreOverrideCursor();
-        if (m_hasAnnotations)
-            showFile(path, 0, false);
-    }
-
     updateActions();
     updateTitle();
 }
@@ -392,32 +435,16 @@ void MainWindow::goToPage(int page)
 {
     if (page < 0 || page >= m_document->pageCount())
         return;
-    QPdfPageNavigator *nav = m_view->pageNavigator();
-    nav->jump(page, {}, nav->currentZoom());
+    m_view->jumpToPage(page);
 }
 
 bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
 {
-    QString toLoad = path;
-    QString newDisplay;
-    if (m_hasAnnotations && m_tempDir.isValid()) {
-        const QString candidate = m_tempDir.filePath(
-            QString("display-%1.pdf").arg(++m_displayCount));
-        if (makeDisplayCopy(path, candidate)) {
-            newDisplay = candidate;
-            toLoad = candidate;
-        } else {
-            QFile::remove(candidate);
-        }
-    }
-
     m_document->close();
     m_document->setPassword(m_password);
 
-    const QPdfDocument::Error error = m_document->load(toLoad);
+    const QPdfDocument::Error error = m_document->load(path);
     if (error != QPdfDocument::Error::None) {
-        if (!newDisplay.isEmpty())
-            QFile::remove(newDisplay);
         if (reportErrors) {
             QString reason;
             switch (error) {
@@ -438,28 +465,10 @@ bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
         return false;
     }
 
-    removeDisplayCopy();
-    m_displayPath = newDisplay;
-
     const int target = qBound(0, page, m_document->pageCount() - 1);
     goToPage(target);
     m_thumbnails->setCurrentPage(target);
     return true;
-}
-
-bool MainWindow::makeDisplayCopy(const QString &source, const QString &target)
-{
-    PdfEditor baker;
-    return baker.open(source, m_password)
-        && baker.bakeAnnotations()
-        && baker.saveAs(target);
-}
-
-void MainWindow::removeDisplayCopy()
-{
-    if (!m_displayPath.isEmpty() && isTempFile(m_displayPath))
-        QFile::remove(m_displayPath);
-    m_displayPath.clear();
 }
 
 // recent files, about, drops
@@ -541,6 +550,7 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 bool MainWindow::saveAs()
 {
+    m_view->commitPendingText();
     if (!m_editor)
         return false;
 
@@ -571,6 +581,7 @@ bool MainWindow::saveAs()
 
 bool MainWindow::save()
 {
+    m_view->commitPendingText();
     if (!m_editor || !m_history.isModified())
         return true;
 
@@ -582,7 +593,7 @@ bool MainWindow::save()
     }
 
     const QString tmp = target + ".pdfapp-tmp";
-    const int page = m_view->pageNavigator()->currentPage();
+    const int page = m_view->currentPage();
 
     {
         PdfEditor saver;
@@ -596,7 +607,6 @@ bool MainWindow::save()
     m_editor.reset();
     m_document->close();
 
-    // 3. Swap the new file in.
     QString error;
     if (!replaceFile(tmp, target, &error)) {
         QFile::remove(tmp);
@@ -657,7 +667,7 @@ QList<int> MainWindow::targetPages() const
 {
     QList<int> pages = m_thumbnails->selectedPages();
     if (pages.isEmpty())
-        pages << m_view->pageNavigator()->currentPage();
+        pages << m_view->currentPage();
     return pages;
 }
 
@@ -667,7 +677,7 @@ void MainWindow::rotateSelectedPages(int degrees)
         return;
 
     const QList<int> pages = targetPages();
-    const int viewPage = m_view->pageNavigator()->currentPage();
+    const int viewPage = m_view->currentPage();
 
     for (int page : pages) {
         if (!m_editor->rotatePage(page, degrees)) {
@@ -687,7 +697,7 @@ void MainWindow::deleteSelectedPages()
     if (!m_editor)
         return;
 
-    const QList<int> pages = targetPages();
+    const QList<int> pages = targetPages();    // ascending order
     const int pageCount = m_document->pageCount();
     if (pages.size() >= pageCount) {
         QMessageBox::information(this, "Delete pages",
@@ -723,11 +733,12 @@ void MainWindow::movePage(int from, int to)
 
 void MainWindow::extractPages()
 {
+    m_view->commitPendingText();
     if (!m_editor)
         return;
 
     const int pageCount = m_document->pageCount();
-    const int current = m_view->pageNavigator()->currentPage();
+    const int current = m_view->currentPage();
 
     PageRangeDialog dialog(pageCount, current, this);
     if (dialog.exec() != QDialog::Accepted)
@@ -767,7 +778,7 @@ void MainWindow::insertPages()
         return;
 
     const int pageCount = m_document->pageCount();
-    const int current = m_view->pageNavigator()->currentPage();
+    const int current = m_view->currentPage();
 
     bool ok = false;
     const int after = QInputDialog::getInt(
@@ -785,6 +796,57 @@ void MainWindow::insertPages()
     refreshAfterEdit(after);
 }
 
+void MainWindow::highlightText()
+{
+    if (!m_editor)
+        return;
+
+    bool ok = false;
+    const QString text = QInputDialog::getText(
+        this, "Highlight text", "Highlight every occurrence of:",
+        QLineEdit::Normal, QString(), &ok);
+    if (!ok || text.trimmed().isEmpty())
+        return;
+
+    const int page = m_view->currentPage();
+    int pagesChanged = 0;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool done = m_editor->highlightText(text.trimmed(), &pagesChanged);
+    QApplication::restoreOverrideCursor();
+
+    if (!done) {
+        QMessageBox::warning(this, "Highlight failed", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return;
+    }
+    if (pagesChanged == 0) {
+        statusBar()->showMessage("No matches found.", 4000);
+        return;
+    }
+
+    if (refreshAfterEdit(page))
+        statusBar()->showMessage(
+            QString("Highlighted text on %1 page(s)").arg(pagesChanged), 4000);
+}
+
+void MainWindow::placeText(int page, const QRectF &box, const QString &text,
+                           const PageView::TextStyle &style)
+{
+    if (!m_editor)
+        return;
+
+    if (!m_editor->addTextBox(page, box, text, style.pdfFont, style.sizePoints,
+                              style.color.redF(), style.color.greenF(), style.color.blueF())) {
+        QMessageBox::warning(this, "Add text failed", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return;
+    }
+    refreshAfterEdit(page);
+}
+
 void MainWindow::undo()
 {
     stepHistory(m_history.undo());
@@ -800,7 +862,7 @@ void MainWindow::stepHistory(const QString &path)
     if (path.isEmpty())
         return;
 
-    const int page = m_view->pageNavigator()->currentPage();
+    const int page = m_view->currentPage();
     if (!showFile(path, page))
         return;
 
@@ -812,8 +874,10 @@ void MainWindow::stepHistory(const QString &path)
 }
 
 // document state
+
 bool MainWindow::confirmDiscard()
 {
+    m_view->commitPendingText();
     if (!m_history.isModified())
         return true;
 
@@ -853,15 +917,18 @@ void MainWindow::updateActions()
 {
     const bool editable = (m_editor != nullptr);
 
-    m_saveAsAction->setEnabled(editable);
     m_saveAction->setEnabled(editable && m_history.isModified());
+    m_saveAsAction->setEnabled(editable);
     m_extractAction->setEnabled(editable);
     m_insertAction->setEnabled(editable);
+    m_highlightAction->setEnabled(editable);
+    m_addTextAction->setEnabled(editable);
+    if (!editable && m_addTextAction->isChecked())
+        m_addTextAction->setChecked(false);
     m_rotateLeftAction->setEnabled(editable);
     m_rotateRightAction->setEnabled(editable);
     m_deletePageAction->setEnabled(editable);
     m_thumbnails->setReorderEnabled(editable);
-    m_highlightAction->setEnabled(editable);
 
     m_undoAction->setEnabled(editable && m_history.canUndo());
     m_redoAction->setEnabled(editable && m_history.canRedo());
@@ -891,41 +958,4 @@ bool MainWindow::isTempFile(const QString &path) const
         return false;
     const QString folder = QDir::cleanPath(m_tempDir.path()) + '/';
     return QDir::cleanPath(path).startsWith(folder);
-}
-
-void MainWindow::highlightText()
-{
-    if (!m_editor)
-        return;
-
-    bool ok = false;
-    const QString text = QInputDialog::getText(
-        this, "Highlight text", "Highlight every occurrence of:",
-        QLineEdit::Normal, QString(), &ok);
-    if (!ok || text.trimmed().isEmpty())
-        return;
-
-    const int page = m_view->pageNavigator()->currentPage();
-    int pagesChanged = 0;
-
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    const bool done = m_editor->highlightText(text.trimmed(), &pagesChanged);
-    QApplication::restoreOverrideCursor();
-
-    if (!done) {
-        QMessageBox::warning(this, "Highlight failed", m_editor->lastError());
-        reopenEditor(m_history.current());
-        updateActions();
-        return;
-    }
-    if (pagesChanged == 0) {
-        statusBar()->showMessage("No matches found.", 4000);
-        return;
-    }
-    
-    m_hasAnnotations = true;
-
-    if (refreshAfterEdit(page))
-        statusBar()->showMessage(
-            QString("Highlighted text on %1 page(s)").arg(pagesChanged), 4000);
 }

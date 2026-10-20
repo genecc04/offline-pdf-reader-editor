@@ -1,5 +1,6 @@
 #pragma once
 #include <QString>
+#include <QRectF>
 
 struct fz_context;
 struct pdf_document;
@@ -12,6 +13,9 @@ public:
 
     PdfEditor(const PdfEditor &) = delete;
     PdfEditor &operator=(const PdfEditor &) = delete;
+    bool addTextBox(int pageIndex, const QRectF &box, const QString &text,
+                const QString &fontName, double fontSize,
+                float red, float green, float blue);
 
     bool open(const QString &path, const QString &password = QString());
     bool saveAs(const QString &path, bool removeUnused = false);

@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "EditHistory.h"
+#include "PageView.h"
 #include "PdfEditor.h"
 
 class QAction;
@@ -17,7 +18,6 @@ class QDropEvent;
 class QLabel;
 class QMenu;
 class QPdfDocument;
-class QPdfView;
 class QSpinBox;
 class BookmarkPane;
 class SearchPane;
@@ -28,7 +28,7 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
 
-    void openPath(const QString &path);   // asks to save unsaved changes first
+    void openPath(const QString &path);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -43,6 +43,7 @@ private:
     void setupBookmarkPane();
     void setupMenus();
     void setupToolbar();
+    void setupTextToolbar();
 
     // file and viewing
     void openFile();
@@ -52,8 +53,6 @@ private:
     void goToPage(int page);
     bool showFile(const QString &path, int page, bool reportErrors = true);
     void addRecentFile(const QString &path);
-    bool makeDisplayCopy(const QString &source, const QString &target);
-    void removeDisplayCopy();
     void updateRecentMenu();
     void showAbout();
 
@@ -63,12 +62,14 @@ private:
     void movePage(int from, int to);
     void extractPages();
     void insertPages();
+    void highlightText();
+    void placeText(int page, const QRectF &box, const QString &text,
+                   const PageView::TextStyle &style);
     bool refreshAfterEdit(int page, const QList<int> &reselect = {});
     QList<int> targetPages() const;
     void undo();
     void redo();
     void stepHistory(const QString &path);
-    void highlightText();
 
     // document state
     bool confirmDiscard();
@@ -79,7 +80,7 @@ private:
     bool isTempFile(const QString &path) const;
 
     QPdfDocument *m_document = nullptr;
-    QPdfView *m_view = nullptr;
+    PageView *m_view = nullptr;
     QSpinBox *m_pageBox = nullptr;
     QLabel *m_pageCountLabel = nullptr;
     ThumbnailPane *m_thumbnails = nullptr;
@@ -90,16 +91,17 @@ private:
     QDockWidget *m_bookmarksDock = nullptr;
     QMenu *m_recentMenu = nullptr;
 
-    QAction *m_saveAsAction = nullptr;
     QAction *m_saveAction = nullptr;
+    QAction *m_saveAsAction = nullptr;
     QAction *m_extractAction = nullptr;
     QAction *m_insertAction = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
+    QAction *m_highlightAction = nullptr;
+    QAction *m_addTextAction = nullptr;
     QAction *m_rotateLeftAction = nullptr;
     QAction *m_rotateRightAction = nullptr;
     QAction *m_deletePageAction = nullptr;
-    QAction *m_highlightAction = nullptr;
 
     std::unique_ptr<PdfEditor> m_editor;
     EditHistory m_history;
@@ -107,8 +109,5 @@ private:
     QString m_currentPath;
     QString m_displayName;
     QString m_password;
-    QString m_displayPath;
-    int m_displayCount = 0;
-    bool m_hasAnnotations = false;
     int m_editCount = 0;
 };
