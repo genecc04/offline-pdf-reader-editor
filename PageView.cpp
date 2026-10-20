@@ -33,6 +33,7 @@ PageView::PageView(QWidget *parent)
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     horizontalScrollBar()->setSingleStep(30);
     verticalScrollBar()->setSingleStep(40);
+    viewport()->setMouseTracking(true);
 }
 
 // document and zoom
@@ -47,6 +48,7 @@ void PageView::setDocument(QPdfDocument *document)
 void PageView::onDocumentChanged()
 {
     finishEditor(false);
+    finishImage(false);
 
     const bool hadStrokes = !m_strokes.isEmpty();
     m_strokes.clear();
@@ -192,7 +194,6 @@ void PageView::jumpToPage(int page, const QPointF &location)
     if (location.isNull()) {
         verticalScrollBar()->setValue(r.top() - kMargin);
     } else {
-        // Bring the spot a third of the way down the window.
         verticalScrollBar()->setValue(
             r.top() + int(location.y() * m_scale) - viewport()->height() / 3);
         horizontalScrollBar()->setValue(
@@ -226,7 +227,6 @@ QRect PageView::pageRectInViewport(int page) const
 
 QPointF PageView::pagePointFor(int page, const QPoint &viewportPos) const
 {
-    // Screen pixels to points on the page, kept inside the page.
     const QRect r = pageRectInViewport(page);
     const QSizeF size = m_pageSizes.at(page);
     return QPointF(qBound(0.0, (viewportPos.x() - r.x()) / m_scale, size.width()),
@@ -351,6 +351,9 @@ void PageView::paintEvent(QPaintEvent *event)
         }
         if (m_drawing && m_activeStroke.page == page)
             drawStroke(painter, m_activeStroke, target);
+
+        if (m_imageActive && m_imagePage == page)
+            drawImagePlacement(painter, target);
     }
 
     if (m_dragging && !m_dragRect.isNull()) {
@@ -382,6 +385,28 @@ void PageView::wheelEvent(QWheelEvent *event)
         return;
     }
     QAbstractScrollArea::wheelEvent(event);
+}
+
+void PageView::keyPressEvent(QKeyEvent *event)
+{
+    if (m_imageAwaiting || m_imageActive) {
+        if (event->key() == Qt::Key_Escape) {
+            finishImage(false);
+            return;
+        }
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            finishImage(true);
+            return;
+        }
+    }
+    QAbstractScrollArea::keyPressEvent(event);
+}
+
+void PageView::commitPendingEdits()
+{
+    finishEditor(true);
+    commitStrokes();
+    finishImage(true);
 }
 
 // draw tool
@@ -425,10 +450,93 @@ void PageView::commitStrokes()
     emit strokesPlaced(strokes);
 }
 
-void PageView::commitPendingEdits()
+// image placement
+
+void PageView::beginImagePlacement(const QImage &image)
 {
-    finishEditor(true);
-    commitStrokes();
+    finishImage(false);
+    if (image.isNull())
+        return;
+    m_pendingImage = image;
+    m_imageAwaiting = true;
+    viewport()->setCursor(Qt::CrossCursor);
+    setFocus();
+}
+
+void PageView::finishImage(bool commit)
+{
+    if (!m_imageAwaiting && !m_imageActive)
+        return;
+
+    const bool wasActive = m_imageActive;
+    const QImage image = m_pendingImage;
+    const int page = m_imagePage;
+    const QRectF box = m_imageRect;
+
+    m_imageAwaiting = false;
+    m_imageActive = false;
+    m_imageDrag = ImageDrag::None;
+    m_pendingImage = QImage();
+    viewport()->setCursor(Qt::ArrowCursor);
+    viewport()->update();
+
+    if (commit && wasActive)
+        emit imagePlaced(page, box, image);
+}
+
+QRectF PageView::imagePixelRect() const
+{
+    const QRect page = pageRectInViewport(m_imagePage);
+    return QRectF(page.x() + m_imageRect.x() * m_scale, page.y() + m_imageRect.y() * m_scale,
+                  m_imageRect.width() * m_scale, m_imageRect.height() * m_scale);
+}
+
+int PageView::imageHandleAt(const QPoint &viewportPos) const
+{
+    if (m_imagePage < 0 || m_imagePage >= m_pageRects.size())
+        return -1;
+    const QRectF r = imagePixelRect();
+    const QPointF corners[4] = { r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight() };
+    for (int i = 0; i < 4; ++i) {
+        if (QLineF(corners[i], QPointF(viewportPos)).length() <= 12.0)
+            return i;
+    }
+    return -1;
+}
+
+void PageView::updateImageCursor(const QPoint &viewportPos)
+{
+    const int handle = imageHandleAt(viewportPos);
+    if (handle == 0 || handle == 3)
+        viewport()->setCursor(Qt::SizeFDiagCursor);
+    else if (handle == 1 || handle == 2)
+        viewport()->setCursor(Qt::SizeBDiagCursor);
+    else if (imagePixelRect().contains(QPointF(viewportPos)))
+        viewport()->setCursor(Qt::SizeAllCursor);
+    else
+        viewport()->setCursor(Qt::ArrowCursor);
+}
+
+void PageView::drawImagePlacement(QPainter &painter, const QRect &pageRect)
+{
+    const QRectF px(pageRect.x() + m_imageRect.x() * m_scale,
+                    pageRect.y() + m_imageRect.y() * m_scale,
+                    m_imageRect.width() * m_scale, m_imageRect.height() * m_scale);
+
+    painter.save();
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.drawImage(px, m_pendingImage);
+
+    painter.setPen(QPen(QColor(0, 102, 204), 2, Qt::DashLine));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(px);
+
+    painter.setPen(QPen(QColor(0, 102, 204), 1));
+    painter.setBrush(Qt::white);
+    const QPointF corners[4] = { px.topLeft(), px.topRight(), px.bottomLeft(), px.bottomRight() };
+    for (const QPointF &c : corners)
+        painter.drawRect(QRectF(c.x() - 5, c.y() - 5, 10, 10));
+    painter.restore();
 }
 
 // text tool
@@ -453,20 +561,77 @@ void PageView::setTextStyle(const TextStyle &style)
     applyEditorStyle();
 }
 
+// mouse
+
 void PageView::mousePressEvent(QMouseEvent *event)
 {
+    const QPoint pos = event->position().toPoint();
+
     if (m_editor) {
         finishEditor(true);
         return;
     }
+
+    if (m_imageActive) {
+        if (event->button() != Qt::LeftButton)
+            return;
+        const int handle = imageHandleAt(pos);
+        if (handle >= 0) {
+            m_imageDrag = ImageDrag::Resize;
+            m_imageHandle = handle;
+            switch (handle) {
+            case 0: m_imageAnchor = m_imageRect.bottomRight(); break;
+            case 1: m_imageAnchor = m_imageRect.bottomLeft(); break;
+            case 2: m_imageAnchor = m_imageRect.topRight(); break;
+            default: m_imageAnchor = m_imageRect.topLeft(); break;
+            }
+            return;
+        }
+        if (imagePixelRect().contains(QPointF(pos))) {
+            m_imageDrag = ImageDrag::Move;
+            m_imageGrab = pagePointFor(m_imagePage, pos) - m_imageRect.topLeft();
+            return;
+        }
+        finishImage(true);
+        return;
+    }
+
+    if (m_imageAwaiting) {
+        if (event->button() != Qt::LeftButton)
+            return;
+        const int page = pageAtViewportPoint(pos);
+        if (page < 0)
+            return;
+
+        const QSizeF pageSize = m_pageSizes.at(page);
+        const double aspect = double(m_pendingImage.width()) / qMax(1, m_pendingImage.height());
+        double width = qMax(30.0, qMin(m_pendingImage.width() * 0.75, pageSize.width() * 0.4));
+        double height = width / aspect;
+        if (height > pageSize.height() * 0.5) {
+            height = pageSize.height() * 0.5;
+            width = height * aspect;
+        }
+
+        const QPointF center = pagePointFor(page, pos);
+        QRectF rect(center.x() - width / 2, center.y() - height / 2, width, height);
+        rect.moveLeft(qBound(0.0, rect.left(), qMax(0.0, pageSize.width() - width)));
+        rect.moveTop(qBound(0.0, rect.top(), qMax(0.0, pageSize.height() - height)));
+
+        m_imagePage = page;
+        m_imageRect = rect;
+        m_imageAwaiting = false;
+        m_imageActive = true;
+        viewport()->update();
+        return;
+    }
+
     if (m_textTool && event->button() == Qt::LeftButton) {
         m_dragging = true;
-        m_dragStart = event->position().toPoint();
+        m_dragStart = pos;
         m_dragRect = QRect();
         return;
     }
     if (m_drawTool && event->button() == Qt::LeftButton) {
-        const QPoint pos = event->position().toPoint();
         const int page = pageAtViewportPoint(pos);
         if (page >= 0) {
             m_activeStroke = Stroke();
@@ -482,15 +647,54 @@ void PageView::mousePressEvent(QMouseEvent *event)
 
 void PageView::mouseMoveEvent(QMouseEvent *event)
 {
+    const QPoint pos = event->position().toPoint();
+
+    if (m_imageActive) {
+        if (m_imageDrag == ImageDrag::None) {
+            updateImageCursor(pos);
+            return;
+        }
+
+        const QPointF p = pagePointFor(m_imagePage, pos);
+        const QSizeF pageSize = m_pageSizes.at(m_imagePage);
+
+        if (m_imageDrag == ImageDrag::Move) {
+            QPointF topLeft = p - m_imageGrab;
+            topLeft.setX(qBound(0.0, topLeft.x(),
+                                qMax(0.0, pageSize.width() - m_imageRect.width())));
+            topLeft.setY(qBound(0.0, topLeft.y(),
+                                qMax(0.0, pageSize.height() - m_imageRect.height())));
+            m_imageRect.moveTopLeft(topLeft);
+        } else {
+            const double aspect = double(m_pendingImage.width())
+                                  / qMax(1, m_pendingImage.height());
+            const bool right = (m_imageHandle == 1 || m_imageHandle == 3);
+            const bool down = (m_imageHandle == 2 || m_imageHandle == 3);
+
+            double width = right ? p.x() - m_imageAnchor.x() : m_imageAnchor.x() - p.x();
+            const double roomX = right ? pageSize.width() - m_imageAnchor.x() : m_imageAnchor.x();
+            const double roomY = down ? pageSize.height() - m_imageAnchor.y() : m_imageAnchor.y();
+            const double maxWidth = qMin(roomX, roomY * aspect);
+            width = qBound(10.0, width, qMax(10.0, maxWidth));
+            const double height = width / aspect;
+
+            m_imageRect = QRectF(right ? m_imageAnchor.x() : m_imageAnchor.x() - width,
+                                 down ? m_imageAnchor.y() : m_imageAnchor.y() - height,
+                                 width, height);
+        }
+        viewport()->update();
+        return;
+    }
+
     if (m_drawing) {
-        const QPointF point = pagePointFor(m_activeStroke.page, event->position().toPoint());
+        const QPointF point = pagePointFor(m_activeStroke.page, pos);
         if (QLineF(m_activeStroke.points.last(), point).length() * m_scale >= 1.5)
             m_activeStroke.points << point;
         viewport()->update();
         return;
     }
     if (m_dragging) {
-        m_dragRect = QRect(m_dragStart, event->position().toPoint()).normalized();
+        m_dragRect = QRect(m_dragStart, pos).normalized();
         viewport()->update();
         return;
     }
@@ -499,6 +703,12 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
 
 void PageView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_imageDrag != ImageDrag::None) {
+        m_imageDrag = ImageDrag::None;
+        viewport()->update();
+        return;
+    }
+
     if (m_drawing && event->button() == Qt::LeftButton) {
         m_drawing = false;
         if (m_activeStroke.points.size() == 1)
@@ -532,10 +742,13 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
     if (box.width() < 12 || box.height() < 12)
         return;
 
+    // Convert from screen pixels to points on the page.
     startEditor(page, QRectF((box.x() - pageRect.x()) / m_scale,
                              (box.y() - pageRect.y()) / m_scale,
                              box.width() / m_scale, box.height() / m_scale));
 }
+
+// text editor
 
 void PageView::startEditor(int page, const QRectF &boxPoints)
 {

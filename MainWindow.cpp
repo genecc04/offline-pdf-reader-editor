@@ -35,6 +35,8 @@
 #include <QUrl>
 #include <QActionGroup>
 #include <QFontComboBox>
+#include <QBuffer>
+#include <QImageReader>
 #include <algorithm>
 
 namespace {
@@ -69,6 +71,23 @@ namespace {
         }
         QFile::remove(backup);
         return true;
+    }
+
+    QByteArray encodeImageForPdf(const QImage &source)
+    {
+        QImage image = source;
+        constexpr int kMaxSide = 2400;
+        if (qMax(image.width(), image.height()) > kMaxSide)
+            image = image.scaled(kMaxSide, kMaxSide, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        buffer.open(QIODevice::WriteOnly);
+        if (image.hasAlphaChannel())
+            image.save(&buffer, "PNG");
+        else
+            image.save(&buffer, "JPEG", 92);
+        return bytes;
     }
 
 }
@@ -110,6 +129,7 @@ void MainWindow::setupViewer()
     });
     connect(m_view, &PageView::strokesPlaced, this, &MainWindow::placeStrokes);
     connect(m_view, &PageView::pendingStrokesChanged, this, &MainWindow::updateActions);
+    connect(m_view, &PageView::imagePlaced, this, &MainWindow::placeImage);
 }
 
 void MainWindow::setupThumbnailPane()
@@ -218,29 +238,39 @@ void MainWindow::setupMenus()
     m_addTextAction = editMenu->addAction("Add &text");
     m_addTextAction->setCheckable(true);
     m_addTextAction->setShortcut(Qt::CTRL | Qt::Key_T);
-    connect(m_addTextAction, &QAction::toggled, this, [this](bool on) {
-        m_view->setTextToolActive(on);
+        connect(m_addTextAction, &QAction::toggled, this, [this](bool on) {
         if (on)
+            m_view->commitPendingEdits();
+        m_view->setTextToolActive(on);
+        if (on) {
             statusBar()->showMessage(
                 "Drag a box on the page, type your text, then click elsewhere to place it "
                 "(Ctrl+Enter also places it, Esc cancels).", 10000);
+        }
     });
 
     m_drawAction = editMenu->addAction("&Draw");
     m_drawAction->setCheckable(true);
     m_drawAction->setShortcut(Qt::CTRL | Qt::Key_D);
     connect(m_drawAction, &QAction::toggled, this, [this](bool on) {
-        m_view->setDrawToolActive(on);
         if (on)
+            m_view->commitPendingEdits();
+        m_view->setDrawToolActive(on);
+        if (on) {
             statusBar()->showMessage(
                 "Draw on the page. Ctrl+Z removes your last stroke. "
                 "Turn Draw off to add everything to the document.", 10000);
+        }
     });
 
     auto *toolGroup = new QActionGroup(this);
     toolGroup->setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
     toolGroup->addAction(m_addTextAction);
     toolGroup->addAction(m_drawAction);
+
+    m_addImageAction = editMenu->addAction("Add &image...");
+    m_addImageAction->setShortcut(Qt::CTRL | Qt::Key_I);
+    connect(m_addImageAction, &QAction::triggered, this, &MainWindow::addImage);
 
     QMenu *viewMenu = menuBar()->addMenu("&View");
     QAction *togglePages = m_pagesDock->toggleViewAction();
@@ -340,7 +370,8 @@ void MainWindow::setupTextToolbar()
     QToolBar *toolbar = addToolBar("Text");
     toolbar->setObjectName("textToolbar");
     toolbar->setMovable(false);
-
+    
+    toolbar->addAction(m_addImageAction);
     toolbar->addAction(m_addTextAction);
 
     auto *fontBox = new QFontComboBox(this);
@@ -389,6 +420,8 @@ void MainWindow::setupTextToolbar()
     connect(italicAction, &QAction::toggled, this, applyStyle);
     connect(size, &QSpinBox::valueChanged, this, applyStyle);
     connect(colorButton, &ColorMenuButton::colorChanged, this, applyStyle);
+
+    toolbar->addSeparator();
     applyStyle();
 }
 
@@ -399,8 +432,9 @@ void MainWindow::setupDrawToolbar()
     toolbar->setObjectName("drawToolbar");
     toolbar->setMovable(false);
 
-    toolbar->addAction(m_drawAction);
+    toolbar->addAction(m_drawAction);   // the same toggle as Edit > Draw
 
+    // These never take keyboard focus, so keyboard shortcuts keep working while you draw.
     auto *mode = new QComboBox(this);
     mode->addItem("Pen");
     mode->addItem("Highlighter");
@@ -424,42 +458,34 @@ void MainWindow::setupDrawToolbar()
     opacity->setFocusPolicy(Qt::NoFocus);
     toolbar->addWidget(opacity);
 
-    auto *color = new QComboBox(this);
-    color->addItem("Black", QColor(0, 0, 0));
-    color->addItem("Blue", QColor(0, 51, 204));
-    color->addItem("Red", QColor(204, 0, 0));
-    color->addItem("Green", QColor(0, 140, 60));
-    color->addItem("Yellow", QColor(255, 220, 0));
-    color->addItem("Orange", QColor(255, 140, 0));
-    color->addItem("White", QColor(255, 255, 255));
-    color->setFocusPolicy(Qt::NoFocus);
-    toolbar->addWidget(color);
+    auto *colorButton = new ColorMenuButton(QColor(0, 0, 0), this);
+    toolbar->addWidget(colorButton);
 
-    auto applyStyle = [this, size, opacity, color]() {
+    auto applyStyle = [this, size, opacity, colorButton]() {
         PageView::DrawStyle style;
-        style.color = color->currentData().value<QColor>();
+        style.color = colorButton->color();
         style.widthPoints = size->value();
         style.opacity = opacity->value() / 100.0;
         m_view->setDrawStyle(style);
     };
     connect(size, &QSpinBox::valueChanged, this, applyStyle);
     connect(opacity, &QSpinBox::valueChanged, this, applyStyle);
-    connect(color, &QComboBox::currentIndexChanged, this, applyStyle);
+    connect(colorButton, &ColorMenuButton::colorChanged, this, applyStyle);
 
     connect(mode, &QComboBox::currentIndexChanged, this,
-            [size, opacity, color](int index) {
+            [size, opacity, colorButton](int index) {
                 if (index == 0) {
                     size->setValue(2);
                     opacity->setValue(100);
-                    color->setCurrentIndex(0);
+                    colorButton->setColor(QColor(0, 0, 0));
                 } else if (index == 1) {
                     size->setValue(14);
                     opacity->setValue(35);
-                    color->setCurrentIndex(4);
+                    colorButton->setColor(QColor(255, 220, 0));
                 } else {
                     size->setValue(16);
                     opacity->setValue(100);
-                    color->setCurrentIndex(6);
+                    colorButton->setColor(QColor(255, 255, 255));
                 }
             });
     applyStyle();
@@ -962,6 +988,55 @@ void MainWindow::placeText(int page, const QRectF &box, const QString &text,
     refreshAfterEdit(page);
 }
 
+void MainWindow::addImage()
+{
+    if (!m_editor)
+        return;
+
+    const QString path = QFileDialog::getOpenFileName(
+        this, "Choose an image", QString(),
+        "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;All files (*)");
+    if (path.isEmpty())
+        return;
+
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    const QImage image = reader.read();
+    if (image.isNull()) {
+        QMessageBox::warning(this, "Add image",
+                             "Could not read that image: " + reader.errorString());
+        return;
+    }
+
+    m_addTextAction->setChecked(false);
+    m_drawAction->setChecked(false);
+
+    m_view->beginImagePlacement(image);
+    statusBar()->showMessage(
+        "Click on the page where the image goes. Drag to move it, drag a corner to resize, "
+        "Enter or a click elsewhere places it, Esc cancels.", 12000);
+}
+
+void MainWindow::placeImage(int page, const QRectF &box, const QImage &image)
+{
+    if (!m_editor)
+        return;
+
+    const QByteArray data = encodeImageForPdf(image);
+    if (data.isEmpty()) {
+        QMessageBox::warning(this, "Add image failed", "Could not prepare the image.");
+        return;
+    }
+
+    if (!m_editor->addImageStamp(page, box, data)) {
+        QMessageBox::warning(this, "Add image failed", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return;
+    }
+    refreshAfterEdit(page);
+}
+
 void MainWindow::placeStrokes(const QVector<PageView::Stroke> &strokes)
 {
     if (!m_editor || strokes.isEmpty())
@@ -1070,6 +1145,7 @@ void MainWindow::updateActions()
 
     m_undoAction->setEnabled(editable && (m_history.canUndo() || m_view->hasPendingStrokes()));
     m_redoAction->setEnabled(editable && m_history.canRedo());
+    m_addImageAction->setEnabled(editable);
 
     m_drawAction->setEnabled(editable);
     if (!editable && m_drawAction->isChecked())

@@ -24,6 +24,7 @@ ColorMenuButton::ColorMenuButton(const QColor &initial, QWidget *parent)
         { "Red", QColor(204, 0, 0) },
         { "Green", QColor(0, 140, 60) },
         { "Orange", QColor(255, 140, 0) },
+        { "Yellow", QColor(255, 220, 0) },
         { "Purple", QColor(130, 40, 170) },
         { "White", QColor(255, 255, 255) },
     };

@@ -2,6 +2,7 @@
 #include <QAbstractScrollArea>
 #include <QCache>
 #include <QColor>
+#include <QImage>
 #include <QPixmap>
 #include <QPointF>
 #include <QRect>
@@ -64,6 +65,8 @@ public:
     bool hasPendingStrokes() const { return !m_strokes.isEmpty(); }
     bool undoLastStroke();
 
+    void beginImagePlacement(const QImage &image);
+
     void commitPendingEdits();
 
 signals:
@@ -73,18 +76,22 @@ signals:
     void textToolFinished();
     void strokesPlaced(const QVector<PageView::Stroke> &strokes);
     void pendingStrokesChanged();
+    void imagePlaced(int page, const QRectF &boxPoints, const QImage &image);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
     void wheelEvent(QWheelEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    enum class ImageDrag { None, Move, Resize };
+
     void onDocumentChanged();
     void recalculateLayout(bool keepPosition);
     void updateCurrentPage();
@@ -101,6 +108,12 @@ private:
     void applyEditorStyle();
     void finishEditor(bool commit);
     void commitStrokes();
+
+    void finishImage(bool commit);
+    void drawImagePlacement(QPainter &painter, const QRect &pageRect);
+    QRectF imagePixelRect() const;
+    int imageHandleAt(const QPoint &viewportPos) const;
+    void updateImageCursor(const QPoint &viewportPos);
 
     QPdfDocument *m_document = nullptr;
     QPdfSearchModel *m_search = nullptr;
@@ -133,4 +146,14 @@ private:
     DrawStyle m_drawStyle;
     Stroke m_activeStroke;
     QVector<Stroke> m_strokes;
+
+    QImage m_pendingImage;
+    bool m_imageAwaiting = false;
+    bool m_imageActive = false;
+    int m_imagePage = -1;
+    QRectF m_imageRect;
+    ImageDrag m_imageDrag = ImageDrag::None;
+    int m_imageHandle = -1;
+    QPointF m_imageGrab;
+    QPointF m_imageAnchor;
 };

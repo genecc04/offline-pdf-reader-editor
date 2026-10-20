@@ -69,6 +69,8 @@ private:
     QList<int> targetPages() const;
     void setupDrawToolbar();
     void placeStrokes(const QVector<PageView::Stroke> &strokes);
+    void addImage();
+    void placeImage(int page, const QRectF &box, const QImage &image);
     void undo();
     void redo();
     void stepHistory(const QString &path);
@@ -105,6 +107,7 @@ private:
     QAction *m_rotateRightAction = nullptr;
     QAction *m_deletePageAction = nullptr;
     QAction *m_drawAction = nullptr;
+    QAction *m_addImageAction = nullptr;
 
     std::unique_ptr<PdfEditor> m_editor;
     EditHistory m_history;
