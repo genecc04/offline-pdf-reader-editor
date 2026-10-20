@@ -23,7 +23,9 @@ public:
     enum class ZoomMode { Custom, FitToWidth, FitInView };
 
     struct TextStyle {
-        QString pdfFont = QStringLiteral("Helv");
+        QString family = QStringLiteral("Arial");
+        bool bold = false;
+        bool italic = false;
         double sizePoints = 12.0;
         QColor color = QColor(0, 0, 0);
     };

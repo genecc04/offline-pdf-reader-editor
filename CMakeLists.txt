@@ -28,6 +28,10 @@ add_executable(PdfApp
     EditHistory.h
     PageView.h
     PageView.cpp
+    ColorMenuButton.h
+    ColorMenuButton.cpp
+    TextRenderer.h
+    TextRenderer.cpp
 )
 
 target_link_libraries(PdfApp PRIVATE

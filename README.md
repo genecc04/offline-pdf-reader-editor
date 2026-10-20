@@ -19,8 +19,8 @@ Editing:
 - Insert pages from another PDF (also works for merging)
 - Undo and redo
 - Highlights and Annotations
-- Text directly on the page
-- Drawing and manual Highlights
+- Add text in any installed font, size and color
+- Freehand pen and highlighter with adjustable size, color and opacity
 - Save the edited PDF as a new file (File > Save As)
 - Save in place (Ctrl+S) or save a copy (File > Save As)
 

@@ -3,6 +3,7 @@
 #include <QRectF>
 #include <QPointF>
 #include <QVector>
+#include <QByteArray>
 
 struct fz_context;
 struct pdf_document;
@@ -31,6 +32,7 @@ public:
     bool hasAnnotations();
     bool addInkStroke(int pageIndex, const QVector<QPointF> &points,
                     float red, float green, float blue, double width, double opacity);
+    bool addImageStamp(int pageIndex, const QRectF &box, const QByteArray &imageData);
     void close();
 
     QString lastError() const { return m_error; }

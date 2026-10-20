@@ -498,3 +498,55 @@ bool PdfEditor::addInkStroke(int pageIndex, const QVector<QPointF> &points,
     }
     return true;
 }
+
+bool PdfEditor::addImageStamp(int pageIndex, const QRectF &box, const QByteArray &imageData)
+{
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (imageData.isEmpty()) {
+        m_error = "There is no image to add.";
+        return false;
+    }
+
+    const unsigned char *data = reinterpret_cast<const unsigned char *>(imageData.constData());
+    const size_t size = size_t(imageData.size());
+    const fz_rect rect = fz_make_rect(float(box.left()), float(box.top()),
+                                      float(box.right()), float(box.bottom()));
+
+    pdf_page *page = nullptr;
+    fz_buffer *buffer = nullptr;
+    fz_image *image = nullptr;
+    fz_var(page);
+    fz_var(buffer);
+    fz_var(image);
+
+    fz_try(m_ctx)
+    {
+        buffer = fz_new_buffer_from_copied_data(m_ctx, data, size);
+        image = fz_new_image_from_buffer(m_ctx, buffer);
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+
+        pdf_annot *annot = pdf_create_annot(m_ctx, page, PDF_ANNOT_STAMP);
+        pdf_set_annot_rect(m_ctx, annot, rect);
+        pdf_set_annot_stamp_image(m_ctx, annot, image);
+        pdf_set_annot_rect(m_ctx, annot, rect);
+        pdf_update_annot(m_ctx, annot);
+    }
+    fz_always(m_ctx)
+    {
+        if (image)
+            fz_drop_image(m_ctx, image);
+        if (buffer)
+            fz_drop_buffer(m_ctx, buffer);
+        if (page)
+            fz_drop_page(m_ctx, &page->super);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
+}

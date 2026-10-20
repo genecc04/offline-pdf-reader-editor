@@ -556,17 +556,17 @@ void PageView::applyEditorStyle()
     if (!m_editor)
         return;
 
-    QString family = QStringLiteral("Arial");
-    if (m_style.pdfFont == QLatin1String("TiRo"))
-        family = QStringLiteral("Times New Roman");
-    else if (m_style.pdfFont == QLatin1String("Cour"))
-        family = QStringLiteral("Courier New");
+    const QString background = m_style.color.lightness() > 200
+        ? QStringLiteral("rgba(60,60,60,225)")
+        : QStringLiteral("rgba(255,255,255,215)");
 
     m_editor->setStyleSheet(
-        QStringLiteral("QPlainTextEdit { color: %1; background: rgba(255,255,255,215);"
-                       " border: 2px solid #0066cc; font-family: \"%2\"; font-size: %3px; }")
-            .arg(m_style.color.name(), family)
-            .arg(qMax(4, int(m_style.sizePoints * m_scale))));
+        QStringLiteral("QPlainTextEdit { color: %1; background: %2; border: 2px solid #0066cc;"
+                       " font-family: \"%3\"; font-size: %4px; font-weight: %5; font-style: %6; }")
+            .arg(m_style.color.name(), background, m_style.family)
+            .arg(qMax(4, int(m_style.sizePoints * m_scale)))
+            .arg(m_style.bold ? QStringLiteral("bold") : QStringLiteral("normal"),
+                 m_style.italic ? QStringLiteral("italic") : QStringLiteral("normal")));
 }
 
 void PageView::positionEditor()

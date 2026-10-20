@@ -4,6 +4,8 @@
 #include "BookmarkPane.h"
 #include "PdfEditor.h"
 #include "PageRangeDialog.h"
+#include "ColorMenuButton.h"
+#include "TextRenderer.h"
 
 #include <QAction>
 #include <QApplication>
@@ -32,6 +34,7 @@
 #include <QToolBar>
 #include <QUrl>
 #include <QActionGroup>
+#include <QFontComboBox>
 #include <algorithm>
 
 namespace {
@@ -340,37 +343,52 @@ void MainWindow::setupTextToolbar()
 
     toolbar->addAction(m_addTextAction);
 
-    auto *font = new QComboBox(this);
-    font->addItem("Helvetica", "Helv");
-    font->addItem("Times", "TiRo");
-    font->addItem("Courier", "Cour");
-    font->setFocusPolicy(Qt::NoFocus);
-    toolbar->addWidget(font);
+    auto *fontBox = new QFontComboBox(this);
+    fontBox->setEditable(false);
+    fontBox->setFontFilters(QFontComboBox::ScalableFonts);
+    fontBox->setCurrentFont(QFont("Arial"));
+    fontBox->setMinimumWidth(190);
+    fontBox->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(fontBox);
+
+    QAction *boldAction = toolbar->addAction("B");
+    boldAction->setCheckable(true);
+    boldAction->setToolTip("Bold");
+    QFont boldFont = boldAction->font();
+    boldFont.setBold(true);
+    boldAction->setFont(boldFont);
+
+    QAction *italicAction = toolbar->addAction("I");
+    italicAction->setCheckable(true);
+    italicAction->setToolTip("Italic");
+    QFont italicFont = italicAction->font();
+    italicFont.setItalic(true);
+    italicAction->setFont(italicFont);
 
     auto *size = new QSpinBox(this);
-    size->setRange(6, 72);
+    size->setRange(6, 200);
     size->setValue(12);
     size->setSuffix(" pt");
     size->setFocusPolicy(Qt::NoFocus);
     toolbar->addWidget(size);
 
-    auto *color = new QComboBox(this);
-    color->addItem("Black", QColor(0, 0, 0));
-    color->addItem("Blue", QColor(0, 51, 204));
-    color->addItem("Red", QColor(204, 0, 0));
-    color->setFocusPolicy(Qt::NoFocus);
-    toolbar->addWidget(color);
+    auto *colorButton = new ColorMenuButton(QColor(0, 0, 0), this);
+    toolbar->addWidget(colorButton);
 
-    auto applyStyle = [this, font, size, color]() {
+    auto applyStyle = [this, fontBox, boldAction, italicAction, size, colorButton]() {
         PageView::TextStyle style;
-        style.pdfFont = font->currentData().toString();
+        style.family = fontBox->currentFont().family();
+        style.bold = boldAction->isChecked();
+        style.italic = italicAction->isChecked();
         style.sizePoints = size->value();
-        style.color = color->currentData().value<QColor>();
+        style.color = colorButton->color();
         m_view->setTextStyle(style);
     };
-    connect(font, &QComboBox::currentIndexChanged, this, applyStyle);
+    connect(fontBox, &QFontComboBox::currentFontChanged, this, applyStyle);
+    connect(boldAction, &QAction::toggled, this, applyStyle);
+    connect(italicAction, &QAction::toggled, this, applyStyle);
     connect(size, &QSpinBox::valueChanged, this, applyStyle);
-    connect(color, &QComboBox::currentIndexChanged, this, applyStyle);
+    connect(colorButton, &ColorMenuButton::colorChanged, this, applyStyle);
     applyStyle();
 }
 
@@ -929,8 +947,13 @@ void MainWindow::placeText(int page, const QRectF &box, const QString &text,
     if (!m_editor)
         return;
 
-    if (!m_editor->addTextBox(page, box, text, style.pdfFont, style.sizePoints,
-                              style.color.redF(), style.color.greenF(), style.color.blueF())) {
+    const QByteArray png = renderTextToPng(text, style, box.size());
+    if (png.isEmpty()) {
+        QMessageBox::warning(this, "Add text failed", "Could not draw the text.");
+        return;
+    }
+
+    if (!m_editor->addImageStamp(page, box, png)) {
         QMessageBox::warning(this, "Add text failed", m_editor->lastError());
         reopenEditor(m_history.current());
         updateActions();
