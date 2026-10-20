@@ -31,7 +31,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QUrl>
-
+#include <QActionGroup>
 #include <algorithm>
 
 namespace {
@@ -80,6 +80,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupMenus();
     setupToolbar();
     setupTextToolbar();
+    setupDrawToolbar();
     updateActions();
 
     setAcceptDrops(true);
@@ -104,6 +105,8 @@ void MainWindow::setupViewer()
     connect(m_view, &PageView::textToolFinished, this, [this]() {
         m_addTextAction->setChecked(false);
     });
+    connect(m_view, &PageView::strokesPlaced, this, &MainWindow::placeStrokes);
+    connect(m_view, &PageView::pendingStrokesChanged, this, &MainWindow::updateActions);
 }
 
 void MainWindow::setupThumbnailPane()
@@ -219,6 +222,22 @@ void MainWindow::setupMenus()
                 "Drag a box on the page, type your text, then click elsewhere to place it "
                 "(Ctrl+Enter also places it, Esc cancels).", 10000);
     });
+
+    m_drawAction = editMenu->addAction("&Draw");
+    m_drawAction->setCheckable(true);
+    m_drawAction->setShortcut(Qt::CTRL | Qt::Key_D);
+    connect(m_drawAction, &QAction::toggled, this, [this](bool on) {
+        m_view->setDrawToolActive(on);
+        if (on)
+            statusBar()->showMessage(
+                "Draw on the page. Ctrl+Z removes your last stroke. "
+                "Turn Draw off to add everything to the document.", 10000);
+    });
+
+    auto *toolGroup = new QActionGroup(this);
+    toolGroup->setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
+    toolGroup->addAction(m_addTextAction);
+    toolGroup->addAction(m_drawAction);
 
     QMenu *viewMenu = menuBar()->addMenu("&View");
     QAction *togglePages = m_pagesDock->toggleViewAction();
@@ -352,6 +371,79 @@ void MainWindow::setupTextToolbar()
     connect(font, &QComboBox::currentIndexChanged, this, applyStyle);
     connect(size, &QSpinBox::valueChanged, this, applyStyle);
     connect(color, &QComboBox::currentIndexChanged, this, applyStyle);
+    applyStyle();
+}
+
+void MainWindow::setupDrawToolbar()
+{
+    addToolBarBreak();
+    QToolBar *toolbar = addToolBar("Draw");
+    toolbar->setObjectName("drawToolbar");
+    toolbar->setMovable(false);
+
+    toolbar->addAction(m_drawAction);
+
+    auto *mode = new QComboBox(this);
+    mode->addItem("Pen");
+    mode->addItem("Highlighter");
+    mode->addItem("White-out");
+    mode->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(mode);
+
+    toolbar->addWidget(new QLabel(" Size ", this));
+    auto *size = new QSpinBox(this);
+    size->setRange(1, 60);
+    size->setValue(2);
+    size->setSuffix(" pt");
+    size->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(size);
+
+    toolbar->addWidget(new QLabel(" Opacity ", this));
+    auto *opacity = new QSpinBox(this);
+    opacity->setRange(5, 100);
+    opacity->setValue(100);
+    opacity->setSuffix(" %");
+    opacity->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(opacity);
+
+    auto *color = new QComboBox(this);
+    color->addItem("Black", QColor(0, 0, 0));
+    color->addItem("Blue", QColor(0, 51, 204));
+    color->addItem("Red", QColor(204, 0, 0));
+    color->addItem("Green", QColor(0, 140, 60));
+    color->addItem("Yellow", QColor(255, 220, 0));
+    color->addItem("Orange", QColor(255, 140, 0));
+    color->addItem("White", QColor(255, 255, 255));
+    color->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(color);
+
+    auto applyStyle = [this, size, opacity, color]() {
+        PageView::DrawStyle style;
+        style.color = color->currentData().value<QColor>();
+        style.widthPoints = size->value();
+        style.opacity = opacity->value() / 100.0;
+        m_view->setDrawStyle(style);
+    };
+    connect(size, &QSpinBox::valueChanged, this, applyStyle);
+    connect(opacity, &QSpinBox::valueChanged, this, applyStyle);
+    connect(color, &QComboBox::currentIndexChanged, this, applyStyle);
+
+    connect(mode, &QComboBox::currentIndexChanged, this,
+            [size, opacity, color](int index) {
+                if (index == 0) {
+                    size->setValue(2);
+                    opacity->setValue(100);
+                    color->setCurrentIndex(0);
+                } else if (index == 1) {
+                    size->setValue(14);
+                    opacity->setValue(35);
+                    color->setCurrentIndex(4);
+                } else {
+                    size->setValue(16);
+                    opacity->setValue(100);
+                    color->setCurrentIndex(6);
+                }
+            });
     applyStyle();
 }
 
@@ -550,7 +642,7 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 bool MainWindow::saveAs()
 {
-    m_view->commitPendingText();
+    m_view->commitPendingEdits();
     if (!m_editor)
         return false;
 
@@ -581,7 +673,7 @@ bool MainWindow::saveAs()
 
 bool MainWindow::save()
 {
-    m_view->commitPendingText();
+    m_view->commitPendingEdits();
     if (!m_editor || !m_history.isModified())
         return true;
 
@@ -733,7 +825,7 @@ void MainWindow::movePage(int from, int to)
 
 void MainWindow::extractPages()
 {
-    m_view->commitPendingText();
+    m_view->commitPendingEdits();
     if (!m_editor)
         return;
 
@@ -847,8 +939,31 @@ void MainWindow::placeText(int page, const QRectF &box, const QString &text,
     refreshAfterEdit(page);
 }
 
+void MainWindow::placeStrokes(const QVector<PageView::Stroke> &strokes)
+{
+    if (!m_editor || strokes.isEmpty())
+        return;
+
+    for (const PageView::Stroke &stroke : strokes) {
+        if (!m_editor->addInkStroke(stroke.page, stroke.points,
+                                    stroke.style.color.redF(), stroke.style.color.greenF(),
+                                    stroke.style.color.blueF(),
+                                    stroke.style.widthPoints, stroke.style.opacity)) {
+            QMessageBox::warning(this, "Draw failed", m_editor->lastError());
+            reopenEditor(m_history.current());
+            updateActions();
+            return;
+        }
+    }
+
+    if (refreshAfterEdit(strokes.last().page))
+        statusBar()->showMessage(QString("Added %1 stroke(s)").arg(strokes.size()), 3000);
+}
+
 void MainWindow::undo()
 {
+    if (m_view->undoLastStroke())
+        return;
     stepHistory(m_history.undo());
 }
 
@@ -877,7 +992,7 @@ void MainWindow::stepHistory(const QString &path)
 
 bool MainWindow::confirmDiscard()
 {
-    m_view->commitPendingText();
+    m_view->commitPendingEdits();
     if (!m_history.isModified())
         return true;
 
@@ -930,8 +1045,12 @@ void MainWindow::updateActions()
     m_deletePageAction->setEnabled(editable);
     m_thumbnails->setReorderEnabled(editable);
 
-    m_undoAction->setEnabled(editable && m_history.canUndo());
+    m_undoAction->setEnabled(editable && (m_history.canUndo() || m_view->hasPendingStrokes()));
     m_redoAction->setEnabled(editable && m_history.canRedo());
+
+    m_drawAction->setEnabled(editable);
+    if (!editable && m_drawAction->isChecked())
+        m_drawAction->setChecked(false);
 }
 
 bool MainWindow::reopenEditor(const QString &path)

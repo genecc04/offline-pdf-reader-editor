@@ -3,6 +3,7 @@
 #include <QAbstractItemModel>
 #include <QFocusEvent>
 #include <QKeyEvent>
+#include <QLineF>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPdfDocument>
@@ -10,9 +11,12 @@
 #include <QPdfLink>
 #include <QPdfSearchModel>
 #include <QPlainTextEdit>
+#include <QPolygonF>
 #include <QScrollBar>
 #include <QTimer>
 #include <QWheelEvent>
+
+#include <utility>
 
 namespace {
 constexpr int kMargin = 12;
@@ -26,7 +30,6 @@ PageView::PageView(QWidget *parent)
     , m_cache(256 * 1024)
 {
     setFocusPolicy(Qt::StrongFocus);
-    // Always showing the scroll bar keeps the width stable, so "fit to width" doesn't flicker.
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     horizontalScrollBar()->setSingleStep(30);
     verticalScrollBar()->setSingleStep(40);
@@ -44,6 +47,14 @@ void PageView::setDocument(QPdfDocument *document)
 void PageView::onDocumentChanged()
 {
     finishEditor(false);
+
+    const bool hadStrokes = !m_strokes.isEmpty();
+    m_strokes.clear();
+    m_drawing = false;
+    m_activeStroke = Stroke();
+    if (hadStrokes)
+        emit pendingStrokesChanged();
+
     m_cache.clear();
     m_pageSizes.clear();
 
@@ -181,6 +192,7 @@ void PageView::jumpToPage(int page, const QPointF &location)
     if (location.isNull()) {
         verticalScrollBar()->setValue(r.top() - kMargin);
     } else {
+        // Bring the spot a third of the way down the window.
         verticalScrollBar()->setValue(
             r.top() + int(location.y() * m_scale) - viewport()->height() / 3);
         horizontalScrollBar()->setValue(
@@ -210,6 +222,15 @@ QRect PageView::pageRectInViewport(int page) const
 {
     return m_pageRects.at(page).translated(-horizontalScrollBar()->value(),
                                            -verticalScrollBar()->value());
+}
+
+QPointF PageView::pagePointFor(int page, const QPoint &viewportPos) const
+{
+    // Screen pixels to points on the page, kept inside the page.
+    const QRect r = pageRectInViewport(page);
+    const QSizeF size = m_pageSizes.at(page);
+    return QPointF(qBound(0.0, (viewportPos.x() - r.x()) / m_scale, size.width()),
+                   qBound(0.0, (viewportPos.y() - r.y()) / m_scale, size.height()));
 }
 
 // search results
@@ -271,6 +292,30 @@ QPixmap PageView::pageImage(int page, const QSize &size, qreal dpr)
     return pixmap;
 }
 
+void PageView::drawStroke(QPainter &painter, const Stroke &stroke, const QRect &pageRect)
+{
+    if (stroke.points.isEmpty())
+        return;
+
+    QPolygonF polygon;
+    for (const QPointF &p : stroke.points)
+        polygon << QPointF(pageRect.x() + p.x() * m_scale, pageRect.y() + p.y() * m_scale);
+
+    QColor color = stroke.style.color;
+    color.setAlphaF(stroke.style.opacity);
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(color, qMax(1.0, stroke.style.widthPoints * m_scale),
+                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(Qt::NoBrush);
+    if (polygon.size() == 1)
+        painter.drawPoint(polygon.first());
+    else
+        painter.drawPolyline(polygon);
+    painter.restore();
+}
+
 void PageView::paintEvent(QPaintEvent *event)
 {
     QPainter painter(viewport());
@@ -299,6 +344,13 @@ void PageView::paintEvent(QPaintEvent *event)
         painter.fillRect(target, Qt::white);
         painter.drawPixmap(target.topLeft(), pageImage(page, target.size(), dpr));
         drawSearchResults(painter, page, target, current);
+
+        for (const Stroke &stroke : std::as_const(m_strokes)) {
+            if (stroke.page == page)
+                drawStroke(painter, stroke, target);
+        }
+        if (m_drawing && m_activeStroke.page == page)
+            drawStroke(painter, m_activeStroke, target);
     }
 
     if (m_dragging && !m_dragRect.isNull()) {
@@ -324,12 +376,59 @@ void PageView::scrollContentsBy(int dx, int dy)
 
 void PageView::wheelEvent(QWheelEvent *event)
 {
-    if (event->modifiers() & Qt::ControlModifier) {          // Ctrl + wheel zooms
+    if (event->modifiers() & Qt::ControlModifier) {
         setZoomFactor(zoomFactor() * (event->angleDelta().y() > 0 ? 1.1 : 1.0 / 1.1));
         event->accept();
         return;
     }
     QAbstractScrollArea::wheelEvent(event);
+}
+
+// draw tool
+
+void PageView::setDrawToolActive(bool active)
+{
+    if (!active)
+        commitStrokes();
+    m_drawTool = active;
+    m_drawing = false;
+    if (active)
+        viewport()->setCursor(Qt::CrossCursor);
+    else if (!m_textTool)
+        viewport()->setCursor(Qt::ArrowCursor);
+    viewport()->update();
+}
+
+void PageView::setDrawStyle(const DrawStyle &style)
+{
+    m_drawStyle = style;
+}
+
+bool PageView::undoLastStroke()
+{
+    if (m_strokes.isEmpty())
+        return false;
+    m_strokes.removeLast();
+    viewport()->update();
+    emit pendingStrokesChanged();
+    return true;
+}
+
+void PageView::commitStrokes()
+{
+    if (m_strokes.isEmpty())
+        return;
+    const QVector<Stroke> strokes = m_strokes;
+    m_strokes.clear();
+    viewport()->update();
+    emit pendingStrokesChanged();
+    emit strokesPlaced(strokes);
+}
+
+void PageView::commitPendingEdits()
+{
+    finishEditor(true);
+    commitStrokes();
 }
 
 // text tool
@@ -341,7 +440,10 @@ void PageView::setTextToolActive(bool active)
     m_textTool = active;
     m_dragging = false;
     m_dragRect = QRect();
-    viewport()->setCursor(active ? Qt::IBeamCursor : Qt::ArrowCursor);
+    if (active)
+        viewport()->setCursor(Qt::IBeamCursor);
+    else if (!m_drawTool)
+        viewport()->setCursor(Qt::ArrowCursor);
     viewport()->update();
 }
 
@@ -349,11 +451,6 @@ void PageView::setTextStyle(const TextStyle &style)
 {
     m_style = style;
     applyEditorStyle();
-}
-
-void PageView::commitPendingText()
-{
-    finishEditor(true);
 }
 
 void PageView::mousePressEvent(QMouseEvent *event)
@@ -368,11 +465,30 @@ void PageView::mousePressEvent(QMouseEvent *event)
         m_dragRect = QRect();
         return;
     }
+    if (m_drawTool && event->button() == Qt::LeftButton) {
+        const QPoint pos = event->position().toPoint();
+        const int page = pageAtViewportPoint(pos);
+        if (page >= 0) {
+            m_activeStroke = Stroke();
+            m_activeStroke.page = page;
+            m_activeStroke.style = m_drawStyle;
+            m_activeStroke.points << pagePointFor(page, pos);
+            m_drawing = true;
+        }
+        return;
+    }
     QAbstractScrollArea::mousePressEvent(event);
 }
 
 void PageView::mouseMoveEvent(QMouseEvent *event)
 {
+    if (m_drawing) {
+        const QPointF point = pagePointFor(m_activeStroke.page, event->position().toPoint());
+        if (QLineF(m_activeStroke.points.last(), point).length() * m_scale >= 1.5)
+            m_activeStroke.points << point;
+        viewport()->update();
+        return;
+    }
     if (m_dragging) {
         m_dragRect = QRect(m_dragStart, event->position().toPoint()).normalized();
         viewport()->update();
@@ -383,6 +499,17 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
 
 void PageView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_drawing && event->button() == Qt::LeftButton) {
+        m_drawing = false;
+        if (m_activeStroke.points.size() == 1)
+            m_activeStroke.points << m_activeStroke.points.first() + QPointF(0.1, 0.0);
+        m_strokes.append(m_activeStroke);
+        m_activeStroke = Stroke();
+        viewport()->update();
+        emit pendingStrokesChanged();
+        return;
+    }
+
     if (!m_dragging || event->button() != Qt::LeftButton) {
         QAbstractScrollArea::mouseReleaseEvent(event);
         return;
@@ -393,7 +520,6 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
     m_dragRect = QRect();
     viewport()->update();
 
-    // A plain click makes a default-sized box.
     if (box.width() < 12 || box.height() < 12)
         box = QRect(m_dragStart, QSize(int(200 * m_scale), int(60 * m_scale)));
 

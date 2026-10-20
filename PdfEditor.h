@@ -1,6 +1,8 @@
 #pragma once
 #include <QString>
 #include <QRectF>
+#include <QPointF>
+#include <QVector>
 
 struct fz_context;
 struct pdf_document;
@@ -27,6 +29,8 @@ public:
     bool highlightText(const QString &text, int *pagesChanged = nullptr);
     bool bakeAnnotations();
     bool hasAnnotations();
+    bool addInkStroke(int pageIndex, const QVector<QPointF> &points,
+                    float red, float green, float blue, double width, double opacity);
     void close();
 
     QString lastError() const { return m_error; }

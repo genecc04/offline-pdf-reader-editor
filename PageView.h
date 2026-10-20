@@ -28,6 +28,18 @@ public:
         QColor color = QColor(0, 0, 0);
     };
 
+    struct DrawStyle {
+        QColor color = QColor(0, 0, 0);
+        double widthPoints = 2.0;
+        double opacity = 1.0;
+    };
+
+    struct Stroke {
+        int page = -1;
+        QVector<QPointF> points;
+        DrawStyle style;
+    };
+
     explicit PageView(QWidget *parent = nullptr);
 
     void setDocument(QPdfDocument *document);
@@ -44,13 +56,21 @@ public:
 
     void setTextToolActive(bool active);
     void setTextStyle(const TextStyle &style);
-    void commitPendingText();
+
+    void setDrawToolActive(bool active);
+    void setDrawStyle(const DrawStyle &style);
+    bool hasPendingStrokes() const { return !m_strokes.isEmpty(); }
+    bool undoLastStroke();
+
+    void commitPendingEdits();
 
 signals:
     void currentPageChanged(int page);
     void textPlaced(int page, const QRectF &boxPoints, const QString &text,
                     const PageView::TextStyle &style);
     void textToolFinished();
+    void strokesPlaced(const QVector<PageView::Stroke> &strokes);
+    void pendingStrokesChanged();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -68,14 +88,17 @@ private:
     void updateCurrentPage();
     int pageAtViewportPoint(const QPoint &point) const;
     QRect pageRectInViewport(int page) const;
+    QPointF pagePointFor(int page, const QPoint &viewportPos) const;
     QPixmap pageImage(int page, const QSize &size, qreal dpr);
     void drawSearchResults(QPainter &painter, int page, const QRect &pageRect,
                            const QPdfLink &current);
+    void drawStroke(QPainter &painter, const Stroke &stroke, const QRect &pageRect);
 
     void startEditor(int page, const QRectF &boxPoints);
     void positionEditor();
     void applyEditorStyle();
     void finishEditor(bool commit);
+    void commitStrokes();
 
     QPdfDocument *m_document = nullptr;
     QPdfSearchModel *m_search = nullptr;
@@ -92,6 +115,7 @@ private:
 
     QCache<quint64, QPixmap> m_cache;
 
+    // text tool
     bool m_textTool = false;
     bool m_dragging = false;
     QPoint m_dragStart;
@@ -100,4 +124,11 @@ private:
     int m_editorPage = -1;
     QRectF m_editorBox;
     TextStyle m_style;
+
+    // draw tool
+    bool m_drawTool = false;
+    bool m_drawing = false;
+    DrawStyle m_drawStyle;
+    Stroke m_activeStroke;
+    QVector<Stroke> m_strokes;
 };

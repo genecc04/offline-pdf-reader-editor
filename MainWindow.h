@@ -67,6 +67,8 @@ private:
                    const PageView::TextStyle &style);
     bool refreshAfterEdit(int page, const QList<int> &reselect = {});
     QList<int> targetPages() const;
+    void setupDrawToolbar();
+    void placeStrokes(const QVector<PageView::Stroke> &strokes);
     void undo();
     void redo();
     void stepHistory(const QString &path);
@@ -102,6 +104,7 @@ private:
     QAction *m_rotateLeftAction = nullptr;
     QAction *m_rotateRightAction = nullptr;
     QAction *m_deletePageAction = nullptr;
+    QAction *m_drawAction = nullptr;
 
     std::unique_ptr<PdfEditor> m_editor;
     EditHistory m_history;

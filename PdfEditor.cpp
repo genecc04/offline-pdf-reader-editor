@@ -452,3 +452,49 @@ bool PdfEditor::addTextBox(int pageIndex, const QRectF &box, const QString &text
     }
     return true;
 }
+
+bool PdfEditor::addInkStroke(int pageIndex, const QVector<QPointF> &points,
+                             float red, float green, float blue, double width, double opacity)
+{
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (points.size() < 2) {
+        m_error = "The stroke is too short.";
+        return false;
+    }
+
+    std::vector<fz_point> stroke;
+    stroke.reserve(points.size());
+    for (const QPointF &p : points)
+        stroke.push_back(fz_make_point(float(p.x()), float(p.y())));
+    const int count = int(stroke.size());
+    const float color[3] = { red, green, blue };
+
+    pdf_page *page = nullptr;
+    fz_var(page);
+
+    fz_try(m_ctx)
+    {
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+
+        pdf_annot *annot = pdf_create_annot(m_ctx, page, PDF_ANNOT_INK);
+        pdf_set_annot_color(m_ctx, annot, 3, color);
+        pdf_set_annot_border(m_ctx, annot, float(width));
+        pdf_set_annot_opacity(m_ctx, annot, float(opacity));
+        pdf_add_annot_ink_list(m_ctx, annot, count, stroke.data());
+        pdf_update_annot(m_ctx, annot);   // builds how the stroke looks
+    }
+    fz_always(m_ctx)
+    {
+        if (page)
+            fz_drop_page(m_ctx, &page->super);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
+}
