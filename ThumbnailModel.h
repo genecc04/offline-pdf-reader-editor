@@ -1,10 +1,13 @@
 #pragma once
 #include <QAbstractListModel>
 #include <QCache>
+#include <QQueue>
 #include <QPixmap>
+#include <QSet>
 
 class QMimeData;
 class QPdfDocument;
+class QTimer;
 
 class ThumbnailModel : public QAbstractListModel
 {
@@ -32,4 +35,7 @@ private:
 
     QPdfDocument *m_document = nullptr;
     mutable QCache<int, QPixmap> m_cache;
+    mutable QQueue<int> m_renderQueue;
+    mutable QSet<int> m_queuedPages;
+    QTimer *m_renderTimer = nullptr;
 };

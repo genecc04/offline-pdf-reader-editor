@@ -4,11 +4,33 @@
 #include <QPainter>
 #include <QMimeData>
 #include <QPdfDocumentRenderOptions>
+#include <QTimer>
 
 ThumbnailModel::ThumbnailModel(QObject *parent)
     : QAbstractListModel(parent)
     , m_cache(300)
 {
+    m_renderTimer = new QTimer(this);
+    m_renderTimer->setSingleShot(true);
+    m_renderTimer->setInterval(5);
+    connect(m_renderTimer, &QTimer::timeout, this, [this]() {
+        if (m_renderQueue.isEmpty())
+            return;
+
+        const int page = m_renderQueue.dequeue();
+        m_queuedPages.remove(page);
+        if (m_document && m_document->status() == QPdfDocument::Status::Ready
+            && page >= 0 && page < m_document->pageCount()
+            && !m_cache.object(page)) {
+            const QPixmap thumbnail = renderThumbnail(page);
+            m_cache.insert(page, new QPixmap(thumbnail));
+            const QModelIndex pageIndex = index(page);
+            emit dataChanged(pageIndex, pageIndex, { Qt::DecorationRole });
+        }
+
+        if (!m_renderQueue.isEmpty())
+            m_renderTimer->start();
+    });
 }
 
 void ThumbnailModel::setDocument(QPdfDocument *document)
@@ -20,6 +42,9 @@ void ThumbnailModel::setDocument(QPdfDocument *document)
     connect(m_document, &QPdfDocument::statusChanged, this, [this]() {
         beginResetModel();
         m_cache.clear();
+        m_renderQueue.clear();
+        m_queuedPages.clear();
+        m_renderTimer->stop();
         endResetModel();
     });
 }
@@ -46,9 +71,22 @@ QVariant ThumbnailModel::data(const QModelIndex &index, int role) const
         if (QPixmap *cached = m_cache.object(page))
             return *cached;
 
-        const QPixmap pixmap = renderThumbnail(page);
-        m_cache.insert(page, new QPixmap(pixmap));
-        return pixmap;
+        if (!m_queuedPages.contains(page)) {
+            m_queuedPages.insert(page);
+            m_renderQueue.enqueue(page);
+            if (!m_renderTimer->isActive())
+                m_renderTimer->start();
+        }
+
+        static const QPixmap placeholder = []() {
+            QPixmap pixmap(kThumbWidth, kThumbHeight);
+            pixmap.fill(Qt::white);
+            QPainter painter(&pixmap);
+            painter.setPen(QColor(210, 210, 210));
+            painter.drawRect(pixmap.rect().adjusted(0, 0, -1, -1));
+            return pixmap;
+        }();
+        return placeholder;
     }
 
     return {};
