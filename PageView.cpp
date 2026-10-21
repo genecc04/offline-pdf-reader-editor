@@ -417,6 +417,9 @@ void PageView::paintEvent(QPaintEvent *event)
         painter.drawPixmap(target.topLeft(), pageImage(page, target.size(), dpr));
         drawSearchResults(painter, page, target, current);
 
+        painter.save();
+        painter.setClipRect(target, Qt::IntersectClip);
+
         for (const SelectionPart &part : std::as_const(m_selection)) {
             if (part.page != page)
                 continue;
@@ -454,6 +457,8 @@ void PageView::paintEvent(QPaintEvent *event)
             painter.drawEllipse(center, radius, radius);
             painter.restore();
         }
+
+        painter.restore();
     }
 
     if (m_dragging && !m_dragRect.isNull()) {
