@@ -21,6 +21,7 @@ Editing:
 - Highlights and Annotations
 - Add text in any installed font, size and color
 - Add images and signatures
+- Add, change or remove a password (AES-256)
 - Freehand pen and highlighter with adjustable size, color and opacity
 - Save the edited PDF as a new file (File > Save As)
 - Save in place (Ctrl+S) or save a copy (File > Save As)

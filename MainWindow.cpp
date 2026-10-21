@@ -37,6 +37,7 @@
 #include <QFontComboBox>
 #include <QBuffer>
 #include <QImageReader>
+#include <QThread>
 #include <algorithm>
 
 namespace {
@@ -60,10 +61,18 @@ namespace {
         const QString backup = target + ".pdfapp-bak";
         QFile::remove(backup);
 
-        if (!QFile::rename(target, backup)) {
-            *error = "Could not replace the original file. Is it open in another program?";
+        QFile original(target);
+        bool renamed = original.rename(backup);
+        for (int attempt = 1; !renamed && attempt < 10; ++attempt) {
+            QThread::msleep(100);
+            renamed = original.rename(backup);
+        }
+        if (!renamed) {
+            *error = "Could not replace the original file (" + original.errorString()
+                    + "). Is it open in another program?";
             return false;
         }
+
         if (!QFile::rename(source, target)) {
             QFile::rename(backup, target);
             *error = "Could not write the new file.";
@@ -219,6 +228,14 @@ void MainWindow::setupMenus()
 
     m_insertAction = fileMenu->addAction("&Insert pages from PDF...");
     connect(m_insertAction, &QAction::triggered, this, &MainWindow::insertPages);
+
+    fileMenu->addSeparator();
+
+    m_setPasswordAction = fileMenu->addAction("Set &password...");
+    connect(m_setPasswordAction, &QAction::triggered, this, &MainWindow::setDocumentPassword);
+
+    m_removePasswordAction = fileMenu->addAction("Re&move password");
+    connect(m_removePasswordAction, &QAction::triggered, this, &MainWindow::removeDocumentPassword);
 
     QMenu *editMenu = menuBar()->addMenu("&Edit");
     m_undoAction = editMenu->addAction("&Undo");
@@ -521,6 +538,8 @@ void MainWindow::loadDocument(const QString &path)
     m_history.clear();
     m_currentPath.clear();
     m_password.clear();
+    m_passwordChange = PasswordChange::None;
+    m_newPassword.clear();
     m_displayName.clear();
     updateActions();
 
@@ -557,10 +576,10 @@ void MainWindow::loadDocument(const QString &path)
     m_currentPath = path;
     m_password = usedPassword;
     m_displayName = QFileInfo(path).fileName();
-    m_history.reset(path);
     addRecentFile(path);
 
-    if (!m_tempDir.isValid() || !reopenEditor(path))
+    openWorkingCopy(path, 0);
+    if (!m_editor)
         statusBar()->showMessage("Editing is not available for this file.", 5000);
 
     updateActions();
@@ -703,12 +722,15 @@ bool MainWindow::saveAs()
     }
 
     PdfEditor saver;
-    if (!saver.open(m_history.current(), m_password) || !saver.saveAs(dest, true)) {
+    if (!saver.open(m_history.current(), m_password)
+        || !saver.saveAs(dest, true, saveEncryption(), m_newPassword)) {
         QMessageBox::warning(this, "Save failed", saver.lastError());
         return false;
     }
 
     m_history.markSaved();
+    m_passwordChange = PasswordChange::None;
+    m_newPassword.clear();
     updateActions();
     updateTitle();
     statusBar()->showMessage("Saved " + QFileInfo(dest).fileName(), 4000);
@@ -718,7 +740,7 @@ bool MainWindow::saveAs()
 bool MainWindow::save()
 {
     m_view->commitPendingEdits();
-    if (!m_editor || !m_history.isModified())
+    if (!m_editor || !isDocumentModified())
         return true;
 
     const QString target = m_currentPath;
@@ -733,7 +755,8 @@ bool MainWindow::save()
 
     {
         PdfEditor saver;
-        if (!saver.open(m_history.current(), m_password) || !saver.saveAs(tmp, true)) {
+        if (!saver.open(m_history.current(), m_password)
+            || !saver.saveAs(tmp, true, saveEncryption(), m_newPassword)) {
             QFile::remove(tmp);
             QMessageBox::warning(this, "Save failed", saver.lastError());
             return false;
@@ -753,10 +776,15 @@ bool MainWindow::save()
         return false;
     }
 
+    if (m_passwordChange == PasswordChange::Set)
+        m_password = m_newPassword;
+    else if (m_passwordChange == PasswordChange::Remove)
+        m_password.clear();
+    m_passwordChange = PasswordChange::None;
+    m_newPassword.clear();
+
     removeSnapshots(m_history.states());
-    m_history.reset(target);
-    showFile(target, page);
-    reopenEditor(target);
+    openWorkingCopy(target, page);
     updateActions();
     updateTitle();
     statusBar()->showMessage("Saved " + m_displayName, 4000);
@@ -895,7 +923,7 @@ void MainWindow::extractPages()
     PdfEditor extractor;
     if (!extractor.open(m_history.current(), m_password)
         || !extractor.keepOnlyPages(dialog.firstPage(), dialog.lastPage())
-        || !extractor.saveAs(dest, true)) {
+        || !extractor.saveAs(dest, true, saveEncryption(), m_newPassword)) {
         QMessageBox::warning(this, "Extract failed", extractor.lastError());
         return;
     }
@@ -1091,7 +1119,7 @@ void MainWindow::stepHistory(const QString &path)
 bool MainWindow::confirmDiscard()
 {
     m_view->commitPendingEdits();
-    if (!m_history.isModified())
+    if (!isDocumentModified())
         return true;
 
     const auto answer = QMessageBox::question(
@@ -1123,15 +1151,16 @@ void MainWindow::updateTitle()
     if (m_displayName.isEmpty())
         setWindowTitle("PDF Reader");
     else
-        setWindowTitle(m_displayName + (m_history.isModified() ? " *" : "") + " - PDF Reader");
+        setWindowTitle(m_displayName + (isDocumentModified() ? " *" : "") + " - PDF Reader");
 }
 
 void MainWindow::updateActions()
 {
     const bool editable = (m_editor != nullptr);
 
-    m_saveAction->setEnabled(editable && m_history.isModified());
-    m_saveAsAction->setEnabled(editable);
+    m_saveAction->setEnabled(editable && isDocumentModified());
+    m_setPasswordAction->setEnabled(editable);
+    m_removePasswordAction->setEnabled(editable && isPasswordProtected());
     m_extractAction->setEnabled(editable);
     m_insertAction->setEnabled(editable);
     m_highlightAction->setEnabled(editable);
@@ -1176,4 +1205,101 @@ bool MainWindow::isTempFile(const QString &path) const
         return false;
     const QString folder = QDir::cleanPath(m_tempDir.path()) + '/';
     return QDir::cleanPath(path).startsWith(folder);
+}
+
+bool MainWindow::isDocumentModified() const
+{
+    return m_history.isModified() || m_passwordChange != PasswordChange::None;
+}
+
+bool MainWindow::isPasswordProtected() const
+{
+    return m_passwordChange == PasswordChange::Set
+           || (m_passwordChange == PasswordChange::None && !m_password.isEmpty());
+}
+
+PdfEditor::Encryption MainWindow::saveEncryption() const
+{
+    switch (m_passwordChange) {
+    case PasswordChange::Set:    return PdfEditor::Encryption::Aes256;
+    case PasswordChange::Remove: return PdfEditor::Encryption::Remove;
+    default:                     return PdfEditor::Encryption::Keep;
+    }
+}
+
+void MainWindow::setDocumentPassword()
+{
+    if (!m_editor)
+        return;
+
+    bool ok = false;
+    const QString first = QInputDialog::getText(
+        this, "Set password",
+        "Enter a password. Anyone opening the saved file will need it.\n"
+        "If you forget it, the file cannot be recovered.",
+        QLineEdit::Password, QString(), &ok);
+    if (!ok)
+        return;
+    if (first.isEmpty()) {
+        QMessageBox::warning(this, "Set password", "The password cannot be empty.");
+        return;
+    }
+    if (first.toUtf8().size() > 127) {
+        QMessageBox::warning(this, "Set password",
+                             "That password is too long (127 characters at most).");
+        return;
+    }
+
+    const QString second = QInputDialog::getText(
+        this, "Set password", "Enter the password again to confirm:",
+        QLineEdit::Password, QString(), &ok);
+    if (!ok)
+        return;
+    if (second != first) {
+        QMessageBox::warning(this, "Set password", "The two passwords don't match.");
+        return;
+    }
+
+    m_passwordChange = PasswordChange::Set;
+    m_newPassword = first;
+    updateActions();
+    updateTitle();
+    statusBar()->showMessage(
+        "The password will be applied when you save (File > Save or Save As).", 8000);
+}
+
+void MainWindow::removeDocumentPassword()
+{
+    if (!m_editor)
+        return;
+
+    const auto answer = QMessageBox::question(
+        this, "Remove password",
+        "Remove the password? Anyone will be able to open the saved file without one.",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+
+    m_passwordChange = m_password.isEmpty() ? PasswordChange::None : PasswordChange::Remove;
+    m_newPassword.clear();
+    updateActions();
+    updateTitle();
+    statusBar()->showMessage(m_passwordChange == PasswordChange::Remove
+        ? "The password will be removed when you save (File > Save or Save As)."
+        : "No password will be set.", 8000);
+}
+
+bool MainWindow::openWorkingCopy(const QString &source, int page)
+{
+    QString working = source;
+    if (m_tempDir.isValid()) {
+        const QString copy = m_tempDir.filePath(QString("state-%1.pdf").arg(++m_editCount));
+        if (QFile::copy(source, copy))
+            working = copy;
+    }
+
+    m_history.reset(working);
+    const bool shown = showFile(working, page);
+    reopenEditor(working);
+    return shown;
 }

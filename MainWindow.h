@@ -53,6 +53,12 @@ private:
     void goToPage(int page);
     bool showFile(const QString &path, int page, bool reportErrors = true);
     void addRecentFile(const QString &path);
+    void setDocumentPassword();
+    void removeDocumentPassword();
+    bool isDocumentModified() const;
+    bool isPasswordProtected() const;
+    PdfEditor::Encryption saveEncryption() const;
+    bool openWorkingCopy(const QString &source, int page);
     void updateRecentMenu();
     void showAbout();
 
@@ -83,6 +89,10 @@ private:
     void removeSnapshots(const QStringList &paths);
     bool isTempFile(const QString &path) const;
 
+    
+    enum class PasswordChange { None, Set, Remove };
+    PasswordChange m_passwordChange = PasswordChange::None;
+
     QPdfDocument *m_document = nullptr;
     PageView *m_view = nullptr;
     QSpinBox *m_pageBox = nullptr;
@@ -108,6 +118,9 @@ private:
     QAction *m_deletePageAction = nullptr;
     QAction *m_drawAction = nullptr;
     QAction *m_addImageAction = nullptr;
+    QString m_newPassword;
+    QAction *m_setPasswordAction = nullptr;
+    QAction *m_removePasswordAction = nullptr;
 
     std::unique_ptr<PdfEditor> m_editor;
     EditHistory m_history;

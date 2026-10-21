@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <vector>
+#include <cstring>
 
 extern "C" {
 #include <mupdf/fitz.h>
@@ -62,7 +63,8 @@ bool PdfEditor::open(const QString &path, const QString &password)
     return true;
 }
 
-bool PdfEditor::saveAs(const QString &path, bool removeUnused)
+bool PdfEditor::saveAs(const QString &path, bool removeUnused,
+                       Encryption encryption, const QString &password)
 {
     if (!m_doc) {
         m_error = "No document is open.";
@@ -70,10 +72,32 @@ bool PdfEditor::saveAs(const QString &path, bool removeUnused)
     }
 
     const QByteArray pathUtf8 = path.toUtf8();
+    const QByteArray passUtf8 = password.toUtf8();
     const char *cPath = pathUtf8.constData();
     pdf_write_options opts = pdf_default_write_options;
+
     if (removeUnused)
         opts.do_garbage = 2;
+
+    switch (encryption) {
+    case Encryption::Keep:
+        break;
+    case Encryption::Remove:
+        opts.do_encrypt = PDF_ENCRYPT_NONE;
+        break;
+    case Encryption::Aes256:
+        if (passUtf8.isEmpty() || passUtf8.size() >= int(sizeof(opts.upwd_utf8))) {
+            m_error = "The password must be between 1 and 127 characters.";
+            return false;
+        }
+        opts.do_encrypt = PDF_ENCRYPT_AES_256;
+        opts.permissions = -1;
+        std::memset(opts.upwd_utf8, 0, sizeof(opts.upwd_utf8));
+        std::memset(opts.opwd_utf8, 0, sizeof(opts.opwd_utf8));
+        std::memcpy(opts.upwd_utf8, passUtf8.constData(), size_t(passUtf8.size()));
+        std::memcpy(opts.opwd_utf8, passUtf8.constData(), size_t(passUtf8.size()));
+        break;
+    }
 
     fz_try(m_ctx)
     {

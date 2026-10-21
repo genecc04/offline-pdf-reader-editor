@@ -21,7 +21,11 @@ public:
                 float red, float green, float blue);
 
     bool open(const QString &path, const QString &password = QString());
-    bool saveAs(const QString &path, bool removeUnused = false);
+    enum class Encryption { Keep, Remove, Aes256 };
+
+    bool saveAs(const QString &path, bool removeUnused = false,
+                Encryption encryption = Encryption::Keep,
+                const QString &password = QString());
     bool keepOnlyPages(int firstIndex, int lastIndex);
     bool rotatePage(int pageIndex, int deltaDegrees);
     bool movePage(int fromIndex, int toIndex);
