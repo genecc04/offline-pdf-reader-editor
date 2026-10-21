@@ -76,6 +76,7 @@ private:
     QList<int> targetPages() const;
     void setupDrawToolbar();
     void placeStrokes(const QVector<PageView::Stroke> &strokes);
+    void eraseInk(int page, const QVector<QPointF> &path, double radius);
     void addImage();
     void placeImage(int page, const QRectF &box, const QImage &image);
     void undo();

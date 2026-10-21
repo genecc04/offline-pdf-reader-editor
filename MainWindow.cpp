@@ -170,6 +170,7 @@ void MainWindow::setupViewer()
         m_addTextAction->setChecked(false);
     });
     connect(m_view, &PageView::strokesPlaced, this, &MainWindow::placeStrokes);
+    connect(m_view, &PageView::eraseRequested, this, &MainWindow::eraseInk);
     connect(m_view, &PageView::pendingStrokesChanged, this, &MainWindow::updateActions);
     connect(m_view, &PageView::imagePlaced, this, &MainWindow::placeImage);
     connect(m_view, &PageView::textSelected, this, [this]() {
@@ -311,7 +312,8 @@ void MainWindow::setupMenus()
         m_view->setDrawToolActive(on);
         if (on) {
             statusBar()->showMessage(
-                "Draw on the page. Ctrl+Z removes your last stroke. "
+                "Draw strokes or erase existing Ink strokes. The eraser does not affect "
+                "highlights or images. Ctrl+Z removes your last pending stroke. "
                 "Turn Draw off to add everything to the document.", 10000);
         }
     });
@@ -500,6 +502,7 @@ void MainWindow::setupDrawToolbar()
     mode->addItem("Pen");
     mode->addItem("Highlighter");
     mode->addItem("White-out");
+    mode->addItem("Eraser");
     mode->setFocusPolicy(Qt::NoFocus);
     toolbar->addWidget(mode);
 
@@ -534,7 +537,9 @@ void MainWindow::setupDrawToolbar()
     connect(colorButton, &ColorMenuButton::colorChanged, this, applyStyle);
 
     connect(mode, &QComboBox::currentIndexChanged, this,
-            [size, opacity, colorButton](int index) {
+            [this, size, opacity, colorButton, applyStyle](int index) {
+                if (index == 3)
+                    m_view->commitPendingEdits();
                 if (index == 0) {
                     size->setValue(2);
                     opacity->setValue(100);
@@ -543,11 +548,17 @@ void MainWindow::setupDrawToolbar()
                     size->setValue(14);
                     opacity->setValue(35);
                     colorButton->setColor(QColor(255, 220, 0));
-                } else {
+                } else if (index == 2) {
                     size->setValue(16);
                     opacity->setValue(100);
                     colorButton->setColor(QColor(255, 255, 255));
+                } else {
+                    size->setValue(16);
                 }
+                opacity->setEnabled(index != 3);
+                colorButton->setEnabled(index != 3);
+                m_view->setEraserActive(index == 3);
+                applyStyle();
             });
     applyStyle();
 }
@@ -576,17 +587,20 @@ void MainWindow::openPath(const QString &path)
 
 void MainWindow::loadDocument(const QString &path)
 {
-    m_editor.reset();
-    m_document->close();
-    removeSnapshots(m_history.states());
-    m_history.clear();
-    m_currentPath.clear();
-    m_password.clear();
-    m_passwordChange = PasswordChange::None;
-    m_newPassword.clear();
-    m_displayName.clear();
-    updateActions();
+    const QString previousState = m_history.current();
+    const int previousPage = m_view->currentPage();
+    auto restorePreviousDocument = [this, &previousState, previousPage]() {
+        if (previousState.isEmpty())
+            return;
+        if (!showFile(previousState, previousPage, false)) {
+            QMessageBox::warning(
+                this, "Open failed",
+                "The new PDF could not be opened, and the previous PDF could not be "
+                "restored. Try reopening the previous file.");
+        }
+    };
 
+    m_document->close();
     m_document->setPassword(QString());
     QPdfDocument::Error error = m_document->load(path);
 
@@ -602,6 +616,7 @@ void MainWindow::loadDocument(const QString &path)
         const QString password = QInputDialog::getText(
             this, "Password required", prompt, QLineEdit::Password, QString(), &ok);
         if (!ok) {
+            restorePreviousDocument();
             updateTitle();
             return;
         }
@@ -612,13 +627,19 @@ void MainWindow::loadDocument(const QString &path)
     }
 
     if (error != QPdfDocument::Error::None) {
+        restorePreviousDocument();
         updateTitle();
         QMessageBox::warning(this, "Error", "Could not open that PDF.");
         return;
     }
 
+    m_editor.reset();
+    removeSnapshots(m_history.states());
+    m_history.clear();
     m_currentPath = path;
     m_password = usedPassword;
+    m_passwordChange = PasswordChange::None;
+    m_newPassword.clear();
     m_displayName = QFileInfo(path).fileName();
     addRecentFile(path);
 
@@ -1141,6 +1162,28 @@ void MainWindow::placeStrokes(const QVector<PageView::Stroke> &strokes)
 
     if (refreshAfterEdit(strokes.last().page))
         statusBar()->showMessage(QString("Added %1 stroke(s)").arg(strokes.size()), 3000);
+}
+
+void MainWindow::eraseInk(int page, const QVector<QPointF> &path, double radius)
+{
+    if (!m_editor)
+        return;
+
+    int removed = 0;
+    if (!m_editor->eraseInk(page, path, radius, &removed)) {
+        QMessageBox::warning(this, "Erase failed", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return;
+    }
+    if (removed == 0) {
+        statusBar()->showMessage("No drawing strokes under the eraser.", 2500);
+        return;
+    }
+
+    if (refreshAfterEdit(page))
+        statusBar()->showMessage(
+            QString("Erased %1 drawing stroke(s)").arg(removed), 3000);
 }
 
 void MainWindow::undo()

@@ -79,6 +79,9 @@ void PageView::onDocumentChanged()
     m_selection.clear();
     m_selStartPage = -1;
     m_selEndPage = -1;
+    m_erasing = false;
+    m_erasePage = -1;
+    m_erasePoints.clear();
 
     const bool hadStrokes = !m_strokes.isEmpty();
     m_strokes.clear();
@@ -413,6 +416,17 @@ void PageView::paintEvent(QPaintEvent *event)
         // An image being placed.
         if (m_imageActive && m_imagePage == page)
             drawImagePlacement(painter, target);
+
+        if (m_drawTool && m_eraserActive && m_erasePage == page) {
+            const QPointF center(m_eraserCursorPos);
+            const qreal radius = qMax(4.0, m_drawStyle.widthPoints * m_scale / 2.0);
+            painter.save();
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.setPen(QPen(QColor(40, 40, 40, 190), 1));
+            painter.setBrush(QColor(255, 255, 255, 100));
+            painter.drawEllipse(center, radius, radius);
+            painter.restore();
+        }
     }
 
     if (m_dragging && !m_dragRect.isNull()) {
@@ -607,6 +621,16 @@ void PageView::setDrawToolActive(bool active)
         viewport()->setCursor(Qt::CrossCursor);
     else if (!m_textTool)
         viewport()->setCursor(Qt::ArrowCursor);
+    viewport()->update();
+}
+
+void PageView::setEraserActive(bool active)
+{
+    m_eraserActive = active;
+    m_erasing = false;
+    m_erasePoints.clear();
+    m_erasePage = -1;
+    viewport()->setCursor(m_drawTool ? Qt::CrossCursor : Qt::ArrowCursor);
     viewport()->update();
 }
 
@@ -822,6 +846,17 @@ void PageView::mousePressEvent(QMouseEvent *event)
     }
     if (m_drawTool && event->button() == Qt::LeftButton) {
         const int page = pageAtViewportPoint(pos);
+        if (m_eraserActive) {
+            if (page >= 0) {
+                m_erasing = true;
+                m_erasePage = page;
+                m_eraserCursorPos = pos;
+                m_erasePoints.clear();
+                m_erasePoints << pagePointFor(page, pos);
+                viewport()->update();
+            }
+            return;
+        }
         if (page >= 0) {
             m_activeStroke = Stroke();
             m_activeStroke.page = page;
@@ -903,6 +938,19 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    if (m_drawTool && m_eraserActive) {
+        m_eraserCursorPos = pos;
+        if (m_erasing) {
+            const QPointF point = pagePointFor(m_erasePage, pos);
+            if (QLineF(m_erasePoints.last(), point).length() * m_scale >= 1.5)
+                m_erasePoints << point;
+        } else {
+            m_erasePage = pageAtViewportPoint(pos);
+        }
+        viewport()->update();
+        return;
+    }
+
     if (m_drawing) {
         const QPointF point = pagePointFor(m_activeStroke.page, pos);
         if (QLineF(m_activeStroke.points.last(), point).length() * m_scale >= 1.5)
@@ -929,6 +977,18 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
 
 void PageView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_erasing && event->button() == Qt::LeftButton) {
+        const int page = m_erasePage;
+        const QVector<QPointF> path = m_erasePoints;
+        const double radius = m_drawStyle.widthPoints / 2.0;
+        m_erasing = false;
+        m_erasePoints.clear();
+        viewport()->update();
+        if (!path.isEmpty())
+            emit eraseRequested(page, path, radius);
+        return;
+    }
+
     if (m_selecting && event->button() == Qt::LeftButton) {
         m_selecting = false;
         m_autoScroll->stop();

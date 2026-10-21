@@ -36,6 +36,8 @@ public:
     bool hasAnnotations();
     bool addInkStroke(int pageIndex, const QVector<QPointF> &points,
                     float red, float green, float blue, double width, double opacity);
+    bool eraseInk(int pageIndex, const QVector<QPointF> &path, double radius,
+                  int *annotationsRemoved = nullptr);
     bool addImageStamp(int pageIndex, const QRectF &box, const QByteArray &imageData);
     void close();
 

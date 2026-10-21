@@ -65,6 +65,7 @@ public:
 
     void setDrawToolActive(bool active);
     void setDrawStyle(const DrawStyle &style);
+    void setEraserActive(bool active);
     bool hasPendingStrokes() const { return !m_strokes.isEmpty(); }
     bool undoLastStroke();
 
@@ -83,6 +84,7 @@ signals:
                     const PageView::TextStyle &style);
     void textToolFinished();
     void strokesPlaced(const QVector<PageView::Stroke> &strokes);
+    void eraseRequested(int page, const QVector<QPointF> &path, double radius);
     void pendingStrokesChanged();
     void imagePlaced(int page, const QRectF &boxPoints, const QImage &image);
     void textSelected();
@@ -163,6 +165,11 @@ private:
     // draw tool
     bool m_drawTool = false;
     bool m_drawing = false;
+    bool m_eraserActive = false;
+    bool m_erasing = false;
+    int m_erasePage = -1;
+    QPoint m_eraserCursorPos;
+    QVector<QPointF> m_erasePoints;
     DrawStyle m_drawStyle;
     Stroke m_activeStroke;
     QVector<Stroke> m_strokes;
