@@ -139,6 +139,9 @@ void MainWindow::setupViewer()
     connect(m_view, &PageView::strokesPlaced, this, &MainWindow::placeStrokes);
     connect(m_view, &PageView::pendingStrokesChanged, this, &MainWindow::updateActions);
     connect(m_view, &PageView::imagePlaced, this, &MainWindow::placeImage);
+    connect(m_view, &PageView::textSelected, this, [this]() {
+        statusBar()->showMessage("Text selected: press Ctrl+C or right-click to copy it.", 5000);
+    });
 }
 
 void MainWindow::setupThumbnailPane()

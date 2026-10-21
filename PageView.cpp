@@ -1,18 +1,25 @@
 #include "PageView.h"
 
 #include <QAbstractItemModel>
+#include <QApplication>
+#include <QClipboard>
+#include <QContextMenuEvent>
 #include <QFocusEvent>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLineF>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPdfDocument>
 #include <QPdfDocumentRenderOptions>
 #include <QPdfLink>
 #include <QPdfSearchModel>
+#include <QPdfSelection>
 #include <QPlainTextEdit>
 #include <QPolygonF>
 #include <QScrollBar>
+#include <QStringList>
 #include <QTimer>
 #include <QWheelEvent>
 
@@ -34,6 +41,24 @@ PageView::PageView(QWidget *parent)
     horizontalScrollBar()->setSingleStep(30);
     verticalScrollBar()->setSingleStep(40);
     viewport()->setMouseTracking(true);
+
+    m_autoScroll = new QTimer(this);
+    m_autoScroll->setInterval(30);
+    connect(m_autoScroll, &QTimer::timeout, this, [this]() {
+        if (!m_selecting) {
+            m_autoScroll->stop();
+            return;
+        }
+        int dy = 0;
+        if (m_lastMouse.y() < 0)
+            dy = m_lastMouse.y() / 2 - 2;
+        else if (m_lastMouse.y() > viewport()->height())
+            dy = (m_lastMouse.y() - viewport()->height()) / 2 + 2;
+        if (dy != 0) {
+            verticalScrollBar()->setValue(verticalScrollBar()->value() + qBound(-40, dy, 40));
+            extendSelection(m_lastMouse);
+        }
+    });
 }
 
 // document and zoom
@@ -49,6 +74,11 @@ void PageView::onDocumentChanged()
 {
     finishEditor(false);
     finishImage(false);
+
+    m_selecting = false;
+    m_selection.clear();
+    m_selStartPage = -1;
+    m_selEndPage = -1;
 
     const bool hadStrokes = !m_strokes.isEmpty();
     m_strokes.clear();
@@ -194,6 +224,7 @@ void PageView::jumpToPage(int page, const QPointF &location)
     if (location.isNull()) {
         verticalScrollBar()->setValue(r.top() - kMargin);
     } else {
+        // Bring the spot a third of the way down the window.
         verticalScrollBar()->setValue(
             r.top() + int(location.y() * m_scale) - viewport()->height() / 3);
         horizontalScrollBar()->setValue(
@@ -219,6 +250,16 @@ int PageView::pageAtViewportPoint(const QPoint &point) const
     return -1;
 }
 
+int PageView::nearestPage(const QPoint &viewportPos) const
+{
+    const int y = viewportPos.y() + verticalScrollBar()->value();
+    for (int i = 0; i < m_pageRects.size(); ++i) {
+        if (y <= m_pageRects.at(i).bottom())
+            return i;
+    }
+    return qMax(0, int(m_pageRects.size()) - 1);
+}
+
 QRect PageView::pageRectInViewport(int page) const
 {
     return m_pageRects.at(page).translated(-horizontalScrollBar()->value(),
@@ -227,6 +268,7 @@ QRect PageView::pageRectInViewport(int page) const
 
 QPointF PageView::pagePointFor(int page, const QPoint &viewportPos) const
 {
+    // Screen pixels to points on the page, kept inside the page.
     const QRect r = pageRectInViewport(page);
     const QSizeF size = m_pageSizes.at(page);
     return QPointF(qBound(0.0, (viewportPos.x() - r.x()) / m_scale, size.width()),
@@ -345,6 +387,22 @@ void PageView::paintEvent(QPaintEvent *event)
         painter.drawPixmap(target.topLeft(), pageImage(page, target.size(), dpr));
         drawSearchResults(painter, page, target, current);
 
+        for (const SelectionPart &part : std::as_const(m_selection)) {
+            if (part.page != page)
+                continue;
+            painter.save();
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 120, 215, 90));
+            for (const QPolygonF &polygon : part.bounds) {
+                QPolygonF mapped;
+                for (const QPointF &p : polygon)
+                    mapped << QPointF(target.x() + p.x() * m_scale,
+                                      target.y() + p.y() * m_scale);
+                painter.drawPolygon(mapped);
+            }
+            painter.restore();
+        }
+
         for (const Stroke &stroke : std::as_const(m_strokes)) {
             if (stroke.page == page)
                 drawStroke(painter, stroke, target);
@@ -352,6 +410,7 @@ void PageView::paintEvent(QPaintEvent *event)
         if (m_drawing && m_activeStroke.page == page)
             drawStroke(painter, m_activeStroke, target);
 
+        // An image being placed.
         if (m_imageActive && m_imagePage == page)
             drawImagePlacement(painter, target);
     }
@@ -399,6 +458,19 @@ void PageView::keyPressEvent(QKeyEvent *event)
             return;
         }
     }
+
+    if (event->matches(QKeySequence::Copy) && !m_selection.isEmpty()) {
+        copySelection();
+        return;
+    }
+    if (event->matches(QKeySequence::SelectAll)) {
+        selectAllText();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape && !m_selection.isEmpty()) {
+        clearSelection();
+        return;
+    }
     QAbstractScrollArea::keyPressEvent(event);
 }
 
@@ -409,12 +481,126 @@ void PageView::commitPendingEdits()
     finishImage(true);
 }
 
+// text selection
+
+void PageView::updateSelection()
+{
+    m_selection.clear();
+    if (!m_document || m_selStartPage < 0 || m_selEndPage < 0)
+        return;
+
+    int firstPage = m_selStartPage;
+    int lastPage = m_selEndPage;
+    QPointF a = m_selStartPoint;
+    QPointF b = m_selEndPoint;
+    const bool sameLine = qAbs(b.y() - a.y()) < 3.0;
+    if (lastPage < firstPage
+        || (lastPage == firstPage && (b.y() < a.y() || (sameLine && b.x() < a.x())))) {
+        std::swap(firstPage, lastPage);
+        std::swap(a, b);
+    }
+
+    for (int page = firstPage; page <= lastPage; ++page) {
+        const QSizeF size = m_pageSizes.at(page);
+        const QPointF start = (page == firstPage) ? a : QPointF(0, 0);
+        const QPointF end = (page == lastPage) ? b : QPointF(size.width(), size.height());
+
+        const QPdfSelection selection = m_document->getSelection(page, start, end);
+        if (selection.isValid() && !selection.text().isEmpty()) {
+            SelectionPart part;
+            part.page = page;
+            part.bounds = selection.bounds();
+            part.text = selection.text();
+            m_selection.append(part);
+        }
+    }
+}
+
+void PageView::extendSelection(const QPoint &viewportPos)
+{
+    if (!m_selMoved) {
+        if ((viewportPos - m_selPressPos).manhattanLength() < QApplication::startDragDistance())
+            return;
+        m_selMoved = true;
+    }
+
+    int page = pageAtViewportPoint(viewportPos);
+    if (page < 0)
+        page = nearestPage(viewportPos);
+    m_selEndPage = page;
+    m_selEndPoint = pagePointFor(page, viewportPos);
+
+    updateSelection();
+    viewport()->update();
+}
+
+void PageView::clearSelection()
+{
+    m_selStartPage = -1;
+    m_selEndPage = -1;
+    if (m_selection.isEmpty())
+        return;
+    m_selection.clear();
+    viewport()->update();
+}
+
+void PageView::selectAllText()
+{
+    if (m_pageSizes.isEmpty())
+        return;
+    const int last = int(m_pageSizes.size()) - 1;
+    m_selStartPage = 0;
+    m_selStartPoint = QPointF(0, 0);
+    m_selEndPage = last;
+    m_selEndPoint = QPointF(m_pageSizes.at(last).width(), m_pageSizes.at(last).height());
+
+    updateSelection();
+    viewport()->update();
+    if (!m_selection.isEmpty())
+        emit textSelected();
+}
+
+void PageView::copySelection()
+{
+    if (m_selection.isEmpty())
+        return;
+
+    QStringList parts;
+    for (const SelectionPart &part : std::as_const(m_selection))
+        parts << part.text;
+
+    QString text = parts.join(QLatin1Char('\n'));
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    QGuiApplication::clipboard()->setText(text);
+}
+
+void PageView::contextMenuEvent(QContextMenuEvent *event)
+{
+    if (m_textTool || m_drawTool || m_editor || m_imageAwaiting || m_imageActive)
+        return;
+
+    QMenu menu(this);
+    QAction *copy = menu.addAction("Copy");
+    copy->setShortcut(QKeySequence::Copy);
+    copy->setEnabled(!m_selection.isEmpty());
+    QAction *all = menu.addAction("Select all");
+    all->setShortcut(QKeySequence::SelectAll);
+
+    const QAction *chosen = menu.exec(event->globalPos());
+    if (chosen == copy)
+        copySelection();
+    else if (chosen == all)
+        selectAllText();
+}
+
 // draw tool
 
 void PageView::setDrawToolActive(bool active)
 {
     if (!active)
         commitStrokes();
+    else
+        clearSelection();
     m_drawTool = active;
     m_drawing = false;
     if (active)
@@ -457,6 +643,7 @@ void PageView::beginImagePlacement(const QImage &image)
     finishImage(false);
     if (image.isNull())
         return;
+    clearSelection();
     m_pendingImage = image;
     m_imageAwaiting = true;
     viewport()->setCursor(Qt::CrossCursor);
@@ -545,6 +732,8 @@ void PageView::setTextToolActive(bool active)
 {
     if (!active)
         finishEditor(true);
+    else
+        clearSelection();
     m_textTool = active;
     m_dragging = false;
     m_dragRect = QRect();
@@ -642,6 +831,34 @@ void PageView::mousePressEvent(QMouseEvent *event)
         }
         return;
     }
+
+    if (event->button() == Qt::LeftButton && !m_textTool && !m_drawTool) {
+        setFocus();
+        const int page = pageAtViewportPoint(pos);
+        const bool extending = page >= 0 && (event->modifiers() & Qt::ShiftModifier)
+                               && !m_selection.isEmpty() && m_selStartPage >= 0;
+        if (!extending)
+            clearSelection();
+        if (page >= 0) {
+            m_selecting = true;
+            m_selMoved = extending;
+            m_selPressPos = pos;
+            m_lastMouse = pos;
+            if (!extending) {
+                m_selStartPage = page;
+                m_selStartPoint = pagePointFor(page, pos);
+            }
+            m_selEndPage = page;
+            m_selEndPoint = m_selStartPoint;
+            if (extending) {
+                m_selEndPoint = pagePointFor(page, pos);
+                updateSelection();
+                viewport()->update();
+            }
+            m_autoScroll->start();
+        }
+        return;
+    }
     QAbstractScrollArea::mousePressEvent(event);
 }
 
@@ -698,11 +915,28 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
         viewport()->update();
         return;
     }
+
+    if (m_selecting) {
+        m_lastMouse = pos;
+        extendSelection(pos);
+        return;
+    }
+
+    if (!m_textTool && !m_drawTool && !m_imageAwaiting && !m_editor)
+        viewport()->setCursor(pageAtViewportPoint(pos) >= 0 ? Qt::IBeamCursor : Qt::ArrowCursor);
     QAbstractScrollArea::mouseMoveEvent(event);
 }
 
 void PageView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_selecting && event->button() == Qt::LeftButton) {
+        m_selecting = false;
+        m_autoScroll->stop();
+        if (!m_selection.isEmpty())
+            emit textSelected();
+        return;
+    }
+
     if (m_imageDrag != ImageDrag::None) {
         m_imageDrag = ImageDrag::None;
         viewport()->update();
@@ -742,7 +976,6 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
     if (box.width() < 12 || box.height() < 12)
         return;
 
-    // Convert from screen pixels to points on the page.
     startEditor(page, QRectF((box.x() - pageRect.x()) / m_scale,
                              (box.y() - pageRect.y()) / m_scale,
                              box.width() / m_scale, box.height() / m_scale));

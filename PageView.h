@@ -3,8 +3,10 @@
 #include <QCache>
 #include <QColor>
 #include <QImage>
+#include <QList>
 #include <QPixmap>
 #include <QPointF>
+#include <QPolygonF>
 #include <QRect>
 #include <QRectF>
 #include <QSize>
@@ -16,6 +18,7 @@ class QPdfDocument;
 class QPdfLink;
 class QPdfSearchModel;
 class QPlainTextEdit;
+class QTimer;
 
 class PageView : public QAbstractScrollArea
 {
@@ -69,6 +72,11 @@ public:
 
     void commitPendingEdits();
 
+    bool hasTextSelection() const { return !m_selection.isEmpty(); }
+    void copySelection();
+    void selectAllText();
+    void clearSelection();
+
 signals:
     void currentPageChanged(int page);
     void textPlaced(int page, const QRectF &boxPoints, const QString &text,
@@ -77,6 +85,7 @@ signals:
     void strokesPlaced(const QVector<PageView::Stroke> &strokes);
     void pendingStrokesChanged();
     void imagePlaced(int page, const QRectF &boxPoints, const QImage &image);
+    void textSelected();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -87,15 +96,23 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     enum class ImageDrag { None, Move, Resize };
 
+    struct SelectionPart {
+        int page = -1;
+        QList<QPolygonF> bounds;
+        QString text;
+    };
+
     void onDocumentChanged();
     void recalculateLayout(bool keepPosition);
     void updateCurrentPage();
     int pageAtViewportPoint(const QPoint &point) const;
+    int nearestPage(const QPoint &viewportPos) const;
     QRect pageRectInViewport(int page) const;
     QPointF pagePointFor(int page, const QPoint &viewportPos) const;
     QPixmap pageImage(int page, const QSize &size, qreal dpr);
@@ -114,6 +131,9 @@ private:
     QRectF imagePixelRect() const;
     int imageHandleAt(const QPoint &viewportPos) const;
     void updateImageCursor(const QPoint &viewportPos);
+
+    void updateSelection();
+    void extendSelection(const QPoint &viewportPos);
 
     QPdfDocument *m_document = nullptr;
     QPdfSearchModel *m_search = nullptr;
@@ -147,6 +167,7 @@ private:
     Stroke m_activeStroke;
     QVector<Stroke> m_strokes;
 
+    // image placement
     QImage m_pendingImage;
     bool m_imageAwaiting = false;
     bool m_imageActive = false;
@@ -156,4 +177,16 @@ private:
     int m_imageHandle = -1;
     QPointF m_imageGrab;
     QPointF m_imageAnchor;
+
+    // text selection
+    bool m_selecting = false;
+    bool m_selMoved = false;
+    QPoint m_selPressPos;
+    QPoint m_lastMouse;
+    int m_selStartPage = -1;
+    QPointF m_selStartPoint;
+    int m_selEndPage = -1;
+    QPointF m_selEndPoint;
+    QVector<SelectionPart> m_selection;
+    QTimer *m_autoScroll = nullptr;
 };

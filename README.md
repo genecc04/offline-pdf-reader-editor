@@ -11,6 +11,7 @@ Reading:
 - Full-text search with highlighted results
 - Bookmarks / table of contents
 - Recent files list, drag a PDF onto the window to open it, and remembered window layout
+- Select text with the mouse and copy it
 
 Editing:
 - Rotate or delete the current page
