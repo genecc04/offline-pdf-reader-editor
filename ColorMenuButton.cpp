@@ -39,6 +39,13 @@ ColorMenuButton::ColorMenuButton(const QColor &initial, QWidget *parent)
     connect(more, &QAction::triggered, this, &ColorMenuButton::chooseCustomColor);
 
     setMenu(menu);
+    setStyleSheet(
+        "QToolButton::menu-indicator {"
+        " subcontrol-position: bottom right;"
+        " right: 5px; bottom: 2px;"
+        " width: 0px; height: 0px;"
+        "}"
+    );
     setIcon(swatch(m_color));
 }
 

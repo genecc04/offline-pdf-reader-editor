@@ -37,12 +37,14 @@
 #include <QFontComboBox>
 #include <QBuffer>
 #include <QImageReader>
-#include <QThread>
+#include <QTemporaryFile>
+#include <QTemporaryDir>
 #include <algorithm>
 
 namespace {
 
     constexpr int kMaxRecentFiles = 8;
+    constexpr int kMaxImageSide = 2400;
 
     QString droppedPdf(const QMimeData *mime)
     {
@@ -56,38 +58,68 @@ namespace {
         return QString();
     }
 
-    bool replaceFile(const QString &source, const QString &target, QString *error)
+    QString createSiblingTempPath(const QString &target, const QString &purpose,
+                                  QString *error)
     {
-        const QString backup = target + ".pdfapp-bak";
-        QFile::remove(backup);
+        const QFileInfo targetInfo(target);
+        const QString pattern = QDir(targetInfo.absolutePath()).filePath(
+            targetInfo.fileName() + ".pdfapp-" + purpose + "-XXXXXX");
+        QTemporaryFile temp(pattern);
+        if (!temp.open()) {
+            *error = "Could not create a temporary file beside the PDF ("
+                     + temp.errorString() + ").";
+            return QString();
+        }
+
+        temp.setAutoRemove(false);
+        const QString path = temp.fileName();
+        temp.close();
+        return path;
+    }
+
+    bool replaceFile(const QString &source, const QString &target, QString *message)
+    {
+        const QFileInfo targetInfo(target);
+        const QString backupPattern = QDir(targetInfo.absolutePath()).filePath(
+            targetInfo.fileName() + ".pdfapp-backup-XXXXXX");
+        QTemporaryDir backupDirectory(backupPattern);
+        if (!backupDirectory.isValid()) {
+            *message = "Could not create a temporary backup folder beside the PDF.";
+            return false;
+        }
+        const QString backup = backupDirectory.filePath(targetInfo.fileName());
 
         QFile original(target);
-        bool renamed = original.rename(backup);
-        for (int attempt = 1; !renamed && attempt < 10; ++attempt) {
-            QThread::msleep(100);
-            renamed = original.rename(backup);
-        }
-        if (!renamed) {
-            *error = "Could not replace the original file (" + original.errorString()
-                    + "). Is it open in another program?";
+        if (!original.rename(backup)) {
+            *message = "Could not move the original PDF for replacement ("
+                       + original.errorString() + "). Is it open in another program?";
             return false;
         }
 
         if (!QFile::rename(source, target)) {
-            QFile::rename(backup, target);
-            *error = "Could not write the new file.";
+            if (QFile::rename(backup, target)) {
+                *message = "Could not install the saved PDF; the original was restored.";
+            } else {
+                backupDirectory.setAutoRemove(false);
+                *message = "Could not install the saved PDF or restore the original. "
+                           "Your original PDF is still available at: " + backup;
+            }
             return false;
         }
-        QFile::remove(backup);
+
+        if (!QFile::remove(backup)) {
+            backupDirectory.setAutoRemove(false);
+            *message = "Saved, but the backup could not be removed: " + backup;
+        }
         return true;
     }
 
     QByteArray encodeImageForPdf(const QImage &source)
     {
         QImage image = source;
-        constexpr int kMaxSide = 2400;
-        if (qMax(image.width(), image.height()) > kMaxSide)
-            image = image.scaled(kMaxSide, kMaxSide, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        if (qMax(image.width(), image.height()) > kMaxImageSide)
+            image = image.scaled(kMaxImageSide, kMaxImageSide, Qt::KeepAspectRatio,
+                                 Qt::SmoothTransformation);
 
         QByteArray bytes;
         QBuffer buffer(&bytes);
@@ -110,6 +142,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupBookmarkPane();
     setupMenus();
     setupToolbar();
+    setupImageToolbar();
     setupTextToolbar();
     setupDrawToolbar();
     updateActions();
@@ -384,14 +417,23 @@ void MainWindow::setupToolbar()
     });
 }
 
+void MainWindow::setupImageToolbar()
+{
+    addToolBarBreak();
+    QToolBar *toolbar = addToolBar("Image");
+    toolbar->setObjectName("imageToolbar");
+    toolbar->setMovable(false);
+
+    toolbar->addAction(m_addImageAction);
+}
+
 void MainWindow::setupTextToolbar()
 {
     addToolBarBreak();
     QToolBar *toolbar = addToolBar("Text");
     toolbar->setObjectName("textToolbar");
     toolbar->setMovable(false);
-    
-    toolbar->addAction(m_addImageAction);
+
     toolbar->addAction(m_addTextAction);
 
     auto *fontBox = new QFontComboBox(this);
@@ -452,9 +494,8 @@ void MainWindow::setupDrawToolbar()
     toolbar->setObjectName("drawToolbar");
     toolbar->setMovable(false);
 
-    toolbar->addAction(m_drawAction);   // the same toggle as Edit > Draw
+    toolbar->addAction(m_drawAction);
 
-    // These never take keyboard focus, so keyboard shortcuts keep working while you draw.
     auto *mode = new QComboBox(this);
     mode->addItem("Pen");
     mode->addItem("Highlighter");
@@ -753,7 +794,12 @@ bool MainWindow::save()
         return false;
     }
 
-    const QString tmp = target + ".pdfapp-tmp";
+    QString tempError;
+    const QString tmp = createSiblingTempPath(target, "tmp", &tempError);
+    if (tmp.isEmpty()) {
+        QMessageBox::warning(this, "Save failed", tempError);
+        return false;
+    }
     const int page = m_view->currentPage();
 
     {
@@ -769,13 +815,13 @@ bool MainWindow::save()
     m_editor.reset();
     m_document->close();
 
-    QString error;
-    if (!replaceFile(tmp, target, &error)) {
+    QString replacementMessage;
+    if (!replaceFile(tmp, target, &replacementMessage)) {
         QFile::remove(tmp);
         showFile(m_history.current(), page, false);
         reopenEditor(m_history.current());
         updateActions();
-        QMessageBox::warning(this, "Save failed", error);
+        QMessageBox::warning(this, "Save failed", replacementMessage);
         return false;
     }
 
@@ -790,7 +836,9 @@ bool MainWindow::save()
     openWorkingCopy(target, page);
     updateActions();
     updateTitle();
-    statusBar()->showMessage("Saved " + m_displayName, 4000);
+    statusBar()->showMessage(
+        replacementMessage.isEmpty() ? "Saved " + m_displayName : replacementMessage,
+        replacementMessage.isEmpty() ? 4000 : 10000);
     return true;
 }
 
@@ -1032,6 +1080,12 @@ void MainWindow::addImage()
 
     QImageReader reader(path);
     reader.setAutoTransform(true);
+    const QSize sourceSize = reader.size();
+    if (sourceSize.isValid() && qMax(sourceSize.width(), sourceSize.height()) > kMaxImageSide) {
+        QSize scaledSize = sourceSize;
+        scaledSize.scale(kMaxImageSide, kMaxImageSide, Qt::KeepAspectRatio);
+        reader.setScaledSize(scaledSize);
+    }
     const QImage image = reader.read();
     if (image.isNull()) {
         QMessageBox::warning(this, "Add image",

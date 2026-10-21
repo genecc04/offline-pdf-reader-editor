@@ -43,6 +43,7 @@ private:
     void setupBookmarkPane();
     void setupMenus();
     void setupToolbar();
+    void setupImageToolbar();
     void setupTextToolbar();
 
     // file and viewing
