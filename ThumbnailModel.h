@@ -20,6 +20,8 @@ public:
     explicit ThumbnailModel(QObject *parent = nullptr);
 
     void setDocument(QPdfDocument *document);
+    void setPageRenderDocument(QPdfDocument *document,
+                               const QList<int> &changedPages = {});
 
     int rowCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &index, int role) const override;
@@ -34,6 +36,7 @@ private:
     QPixmap renderThumbnail(int page) const;
 
     QPdfDocument *m_document = nullptr;
+    QPdfDocument *m_pageRenderDocument = nullptr;
     mutable QCache<int, QPixmap> m_cache;
     mutable QQueue<int> m_renderQueue;
     mutable QSet<int> m_queuedPages;

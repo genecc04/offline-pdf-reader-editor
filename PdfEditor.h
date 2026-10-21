@@ -1,5 +1,6 @@
 #pragma once
 #include <QString>
+#include <QList>
 #include <QRectF>
 #include <QPointF>
 #include <QVector>
@@ -31,7 +32,7 @@ public:
     bool movePage(int fromIndex, int toIndex);
     bool insertPagesFrom(const QString &sourcePath, int insertAt);
     bool deletePage(int pageIndex);
-    bool highlightText(const QString &text, int *pagesChanged = nullptr);
+    bool highlightText(const QString &text, QList<int> *changedPages = nullptr);
     bool bakeAnnotations();
     bool hasAnnotations();
     bool addInkStroke(int pageIndex, const QVector<QPointF> &points,

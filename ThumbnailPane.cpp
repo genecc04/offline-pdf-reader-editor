@@ -37,6 +37,12 @@ void ThumbnailPane::setDocument(QPdfDocument *document)
     m_model->setDocument(document);
 }
 
+void ThumbnailPane::setPageRenderDocument(QPdfDocument *document,
+                                          const QList<int> &changedPages)
+{
+    m_model->setPageRenderDocument(document, changedPages);
+}
+
 void ThumbnailPane::setCurrentPage(int page)
 {
     const QModelIndex index = m_model->index(page);

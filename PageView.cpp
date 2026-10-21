@@ -70,6 +70,29 @@ void PageView::setDocument(QPdfDocument *document)
     onDocumentChanged();
 }
 
+void PageView::setPageRenderDocument(QPdfDocument *document,
+                                     const QList<int> &changedPages)
+{
+    m_pageRenderDocument = document;
+    if (changedPages.isEmpty()) {
+        m_cache.clear();
+        viewport()->update();
+        return;
+    }
+
+    const QList<quint64> keys = m_cache.keys();
+    for (quint64 key : keys) {
+        if (changedPages.contains(int(key >> 40)))
+            m_cache.remove(key);
+    }
+
+    const QPoint offset(horizontalScrollBar()->value(), verticalScrollBar()->value());
+    for (int page : changedPages) {
+        if (page >= 0 && page < m_pageRects.size())
+            viewport()->update(m_pageRects.at(page).translated(-offset));
+    }
+}
+
 void PageView::onDocumentChanged()
 {
     finishEditor(false);
@@ -329,7 +352,11 @@ QPixmap PageView::pageImage(int page, const QSize &size, qreal dpr)
 
     QPdfDocumentRenderOptions options;
     options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
-    const QImage image = m_document->render(page, size * dpr, options);
+    QPdfDocument *source = m_pageRenderDocument
+                                   && m_pageRenderDocument->status() == QPdfDocument::Status::Ready
+                               ? m_pageRenderDocument
+                               : m_document;
+    const QImage image = source->render(page, size * dpr, options);
 
     QPixmap pixmap = QPixmap::fromImage(image);
     pixmap.setDevicePixelRatio(dpr);

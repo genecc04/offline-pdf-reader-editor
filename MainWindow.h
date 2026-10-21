@@ -53,6 +53,7 @@ private:
     bool saveAs();
     void goToPage(int page);
     bool showFile(const QString &path, int page, bool reportErrors = true);
+    void clearPageRenderDocument();
     void addRecentFile(const QString &path);
     void setDocumentPassword();
     void removeDocumentPassword();
@@ -73,6 +74,7 @@ private:
     void placeText(int page, const QRectF &box, const QString &text,
                    const PageView::TextStyle &style);
     bool refreshAfterEdit(int page, const QList<int> &reselect = {});
+    bool refreshAfterPageEdit(const QList<int> &changedPages, int page);
     QList<int> targetPages() const;
     void setupDrawToolbar();
     void placeStrokes(const QVector<PageView::Stroke> &strokes);
@@ -96,6 +98,7 @@ private:
     PasswordChange m_passwordChange = PasswordChange::None;
 
     QPdfDocument *m_document = nullptr;
+    QPdfDocument *m_pageRenderDocument = nullptr;
     PageView *m_view = nullptr;
     QSpinBox *m_pageBox = nullptr;
     QLabel *m_pageCountLabel = nullptr;

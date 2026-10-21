@@ -448,10 +448,10 @@ bool PdfEditor::insertPagesFrom(const QString &sourcePath, int insertAt)
     return true;
 }
 
-bool PdfEditor::highlightText(const QString &text, int *pagesChanged)
+bool PdfEditor::highlightText(const QString &text, QList<int> *changedPages)
 {
-    if (pagesChanged)
-        *pagesChanged = 0;
+    if (changedPages)
+        changedPages->clear();
     if (!m_doc) {
         m_error = "No document is open.";
         return false;
@@ -480,8 +480,6 @@ bool PdfEditor::highlightText(const QString &text, int *pagesChanged)
     constexpr int kSearchCapacity = kMaxHitsPerPage + 1;
     std::vector<fz_quad> quads(kSearchCapacity);
     std::vector<int> marks(kSearchCapacity);
-    int changed = 0;
-
     for (int pageIndex = 0; pageIndex < count; ++pageIndex) {
         pdf_page *page = nullptr;
         int hits = 0;
@@ -518,12 +516,10 @@ bool PdfEditor::highlightText(const QString &text, int *pagesChanged)
             return false;
         }
 
-        if (hits > 0)
-            ++changed;
+        if (hits > 0 && changedPages)
+            changedPages->append(pageIndex);
     }
 
-    if (pagesChanged)
-        *pagesChanged = changed;
     return true;
 }
 

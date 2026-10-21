@@ -159,6 +159,7 @@ MainWindow::MainWindow(QWidget *parent)
 void MainWindow::setupViewer()
 {
     m_document = new QPdfDocument(this);
+    m_pageRenderDocument = new QPdfDocument(this);
 
     m_view = new PageView(this);
     m_view->setDocument(m_document);
@@ -600,6 +601,7 @@ void MainWindow::loadDocument(const QString &path)
         }
     };
 
+    clearPageRenderDocument();
     m_document->close();
     m_document->setPassword(QString());
     QPdfDocument::Error error = m_document->load(path);
@@ -660,6 +662,7 @@ void MainWindow::goToPage(int page)
 
 bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
 {
+    clearPageRenderDocument();
     m_document->close();
     m_document->setPassword(m_password);
 
@@ -689,6 +692,16 @@ bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
     goToPage(target);
     m_thumbnails->setCurrentPage(target);
     return true;
+}
+
+void MainWindow::clearPageRenderDocument()
+{
+    if (m_view)
+        m_view->setPageRenderDocument(nullptr);
+    if (m_thumbnails)
+        m_thumbnails->setPageRenderDocument(nullptr);
+    if (m_pageRenderDocument)
+        m_pageRenderDocument->close();
 }
 
 // recent files, about, drops
@@ -899,6 +912,55 @@ bool MainWindow::refreshAfterEdit(int page, const QList<int> &reselect)
     return true;
 }
 
+bool MainWindow::refreshAfterPageEdit(const QList<int> &changedPages, int page)
+{
+    if (!m_tempDir.isValid()) {
+        QMessageBox::warning(this, "Edit failed", "Could not create a temporary folder.");
+        reopenEditor(m_history.current());
+        updateActions();
+        return false;
+    }
+
+    QList<int> pages;
+    for (int changedPage : changedPages) {
+        if (changedPage >= 0 && changedPage < m_document->pageCount()
+            && !pages.contains(changedPage))
+            pages.append(changedPage);
+    }
+    if (pages.isEmpty())
+        return refreshAfterEdit(page);
+
+    const QString newPath = m_tempDir.filePath(
+        QString("state-%1.pdf").arg(++m_editCount));
+    if (!m_editor->saveAs(newPath)) {
+        QMessageBox::warning(this, "Edit failed", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return false;
+    }
+
+    m_pageRenderDocument->close();
+    m_pageRenderDocument->setPassword(m_password);
+    if (m_pageRenderDocument->load(newPath) != QPdfDocument::Error::None) {
+        if (!showFile(newPath, page)) {
+            QFile::remove(newPath);
+            showFile(m_history.current(), page, false);
+            reopenEditor(m_history.current());
+            updateActions();
+            return false;
+        }
+    } else {
+        m_view->setPageRenderDocument(m_pageRenderDocument, pages);
+        m_thumbnails->setPageRenderDocument(m_pageRenderDocument, pages);
+    }
+
+    removeSnapshots(m_history.push(newPath));
+    reopenEditor(newPath);
+    updateActions();
+    updateTitle();
+    return true;
+}
+
 QList<int> MainWindow::targetPages() const
 {
     QList<int> pages = m_thumbnails->selectedPages();
@@ -1045,10 +1107,10 @@ void MainWindow::highlightText()
         return;
 
     const int page = m_view->currentPage();
-    int pagesChanged = 0;
+    QList<int> changedPages;
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const bool done = m_editor->highlightText(text.trimmed(), &pagesChanged);
+    const bool done = m_editor->highlightText(text.trimmed(), &changedPages);
     QApplication::restoreOverrideCursor();
 
     if (!done) {
@@ -1057,14 +1119,14 @@ void MainWindow::highlightText()
         updateActions();
         return;
     }
-    if (pagesChanged == 0) {
+    if (changedPages.isEmpty()) {
         statusBar()->showMessage("No matches found.", 4000);
         return;
     }
 
-    if (refreshAfterEdit(page))
+    if (refreshAfterPageEdit(changedPages, page))
         statusBar()->showMessage(
-            QString("Highlighted text on %1 page(s)").arg(pagesChanged), 4000);
+            QString("Highlighted text on %1 page(s)").arg(changedPages.size()), 4000);
 }
 
 void MainWindow::placeText(int page, const QRectF &box, const QString &text,
@@ -1085,7 +1147,7 @@ void MainWindow::placeText(int page, const QRectF &box, const QString &text,
         updateActions();
         return;
     }
-    refreshAfterEdit(page);
+    refreshAfterPageEdit({ page }, page);
 }
 
 void MainWindow::addImage()
@@ -1140,7 +1202,7 @@ void MainWindow::placeImage(int page, const QRectF &box, const QImage &image)
         updateActions();
         return;
     }
-    refreshAfterEdit(page);
+    refreshAfterPageEdit({ page }, page);
 }
 
 void MainWindow::placeStrokes(const QVector<PageView::Stroke> &strokes)
@@ -1160,7 +1222,12 @@ void MainWindow::placeStrokes(const QVector<PageView::Stroke> &strokes)
         }
     }
 
-    if (refreshAfterEdit(strokes.last().page))
+    QList<int> changedPages;
+    for (const PageView::Stroke &stroke : strokes) {
+        if (!changedPages.contains(stroke.page))
+            changedPages.append(stroke.page);
+    }
+    if (refreshAfterPageEdit(changedPages, strokes.last().page))
         statusBar()->showMessage(QString("Added %1 stroke(s)").arg(strokes.size()), 3000);
 }
 
@@ -1181,7 +1248,7 @@ void MainWindow::eraseInk(int page, const QVector<QPointF> &path, double radius)
         return;
     }
 
-    if (refreshAfterEdit(page))
+    if (refreshAfterPageEdit({ page }, page))
         statusBar()->showMessage(
             QString("Erased %1 drawing stroke(s)").arg(removed), 3000);
 }

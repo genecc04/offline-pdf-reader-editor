@@ -49,6 +49,8 @@ public:
     explicit PageView(QWidget *parent = nullptr);
 
     void setDocument(QPdfDocument *document);
+    void setPageRenderDocument(QPdfDocument *document,
+                               const QList<int> &changedPages = {});
     void setSearchModel(QPdfSearchModel *model);
     void setCurrentSearchResultIndex(int index);
 
@@ -138,6 +140,7 @@ private:
     void extendSelection(const QPoint &viewportPos);
 
     QPdfDocument *m_document = nullptr;
+    QPdfDocument *m_pageRenderDocument = nullptr;
     QPdfSearchModel *m_search = nullptr;
     int m_searchIndex = -1;
 

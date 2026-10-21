@@ -19,8 +19,13 @@ ThumbnailModel::ThumbnailModel(QObject *parent)
 
         const int page = m_renderQueue.dequeue();
         m_queuedPages.remove(page);
-        if (m_document && m_document->status() == QPdfDocument::Status::Ready
-            && page >= 0 && page < m_document->pageCount()
+        QPdfDocument *source = m_pageRenderDocument
+                                       && m_pageRenderDocument->status()
+                                              == QPdfDocument::Status::Ready
+                                   ? m_pageRenderDocument
+                                   : m_document;
+        if (source && source->status() == QPdfDocument::Status::Ready
+            && page >= 0 && page < source->pageCount()
             && !m_cache.object(page)) {
             const QPixmap thumbnail = renderThumbnail(page);
             m_cache.insert(page, new QPixmap(thumbnail));
@@ -47,6 +52,26 @@ void ThumbnailModel::setDocument(QPdfDocument *document)
         m_renderTimer->stop();
         endResetModel();
     });
+}
+
+void ThumbnailModel::setPageRenderDocument(QPdfDocument *document,
+                                           const QList<int> &changedPages)
+{
+    m_pageRenderDocument = document;
+    if (changedPages.isEmpty()) {
+        m_cache.clear();
+        m_renderQueue.clear();
+        m_queuedPages.clear();
+        m_renderTimer->stop();
+        return;
+    }
+
+    for (int page : changedPages) {
+        if (page < 0 || page >= rowCount())
+            continue;
+        m_cache.remove(page);
+        emit dataChanged(index(page), index(page), { Qt::DecorationRole });
+    }
 }
 
 int ThumbnailModel::rowCount(const QModelIndex &parent) const
@@ -94,14 +119,18 @@ QVariant ThumbnailModel::data(const QModelIndex &index, int role) const
 
 QPixmap ThumbnailModel::renderThumbnail(int page) const
 {
-    const QSizeF pts = m_document->pagePointSize(page);
+    QPdfDocument *source = m_pageRenderDocument
+                                   && m_pageRenderDocument->status() == QPdfDocument::Status::Ready
+                               ? m_pageRenderDocument
+                               : m_document;
+    const QSizeF pts = source->pagePointSize(page);
     const qreal scale = qMin(kThumbWidth / pts.width(), kThumbHeight / pts.height());
     const QSize size(qMax(1, int(pts.width() * scale)),
                      qMax(1, int(pts.height() * scale)));
 
     QPdfDocumentRenderOptions options;
     options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
-    const QImage rendered = m_document->render(page, size, options);
+    const QImage rendered = source->render(page, size, options);
 
     QImage canvas(rendered.size(), QImage::Format_RGB32);
     canvas.fill(Qt::white);

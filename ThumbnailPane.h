@@ -13,6 +13,8 @@ public:
     explicit ThumbnailPane(QWidget *parent = nullptr);
 
     void setDocument(QPdfDocument *document);
+    void setPageRenderDocument(QPdfDocument *document,
+                               const QList<int> &changedPages = {});
     void setCurrentPage(int page);
     void setReorderEnabled(bool enabled);
 
