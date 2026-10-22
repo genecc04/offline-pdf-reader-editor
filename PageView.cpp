@@ -26,6 +26,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QWheelEvent>
+#include <QtMath>
 
 #include <utility>
 
@@ -868,6 +869,25 @@ void PageView::beginImagePlacement(const QImage &image)
     m_imageAwaiting = true;
     viewport()->setCursor(Qt::CrossCursor);
     setFocus();
+    emit imagePlacementStateChanged(true, false);
+}
+
+void PageView::setImageCropMode(bool active)
+{
+    if (!m_imageActive || m_imageCropping == active)
+        return;
+
+    m_imageCropping = active;
+    m_imageCropDragging = false;
+    m_imageCropRect = active ? m_imageRect : QRectF();
+    viewport()->setCursor(active ? Qt::CrossCursor : Qt::SizeAllCursor);
+    emit imageCropModeChanged(active);
+    viewport()->update();
+}
+
+void PageView::cancelImagePlacement()
+{
+    finishImage(false);
 }
 
 void PageView::finishImage(bool commit)
@@ -876,12 +896,16 @@ void PageView::finishImage(bool commit)
         return;
 
     const bool wasActive = m_imageActive;
+    const bool wasCropping = m_imageCropping;
     const QImage image = m_pendingImage;
     const int page = m_imagePage;
     const QRectF box = m_imageRect;
 
     m_imageAwaiting = false;
     m_imageActive = false;
+    m_imageCropping = false;
+    m_imageCropDragging = false;
+    m_imageCropRect = QRectF();
     m_imageDrag = ImageDrag::None;
     m_pendingImage = QImage();
     viewport()->setCursor(Qt::ArrowCursor);
@@ -889,6 +913,9 @@ void PageView::finishImage(bool commit)
 
     if (commit && wasActive)
         emit imagePlaced(page, box, image);
+    emit imagePlacementStateChanged(false, false);
+    if (wasCropping)
+        emit imageCropModeChanged(false);
     emit pendingChangesChanged();
 }
 
@@ -897,6 +924,80 @@ QRectF PageView::imagePixelRect() const
     const QRect page = pageRectInViewport(m_imagePage);
     return QRectF(page.x() + m_imageRect.x() * m_scale, page.y() + m_imageRect.y() * m_scale,
                   m_imageRect.width() * m_scale, m_imageRect.height() * m_scale);
+}
+
+void PageView::updateImageCropRect(const QPoint &viewportPos)
+{
+    const QRect page = pageRectInViewport(m_imagePage);
+    const QPointF imagePoint((viewportPos.x() - page.x()) / m_scale,
+                             (viewportPos.y() - page.y()) / m_scale);
+    const QPointF end(qBound(m_imageRect.left(), imagePoint.x(), m_imageRect.right()),
+                      qBound(m_imageRect.top(), imagePoint.y(), m_imageRect.bottom()));
+    m_imageCropRect = QRectF(m_imageCropAnchor, end).normalized().intersected(m_imageRect);
+    viewport()->update();
+}
+
+QRectF PageView::imageCropPixelRect() const
+{
+    const QRect page = pageRectInViewport(m_imagePage);
+    const QRectF crop = m_imageCropRect.isEmpty() ? m_imageRect : m_imageCropRect;
+    return QRectF(page.x() + crop.x() * m_scale, page.y() + crop.y() * m_scale,
+                  crop.width() * m_scale, crop.height() * m_scale);
+}
+
+int PageView::imageCropHandleAt(const QPoint &viewportPos) const
+{
+    const QRectF rect = imageCropPixelRect();
+    const QPointF corners[] = {
+        rect.topLeft(), rect.topRight(), rect.bottomLeft(), rect.bottomRight()
+    };
+    for (int i = 0; i < 4; ++i) {
+        if (QLineF(corners[i], QPointF(viewportPos)).length() <= 12.0)
+            return i;
+    }
+    return -1;
+}
+
+void PageView::applyImageCrop()
+{
+    if (m_imageCropRect.width() < 3.0 || m_imageCropRect.height() < 3.0) {
+        m_imageCropRect = QRectF();
+        viewport()->update();
+        return;
+    }
+
+    const QRectF selected = m_imageCropRect.intersected(m_imageRect);
+    if (selected.width() < 3.0 || selected.height() < 3.0) {
+        m_imageCropRect = m_imageRect;
+        viewport()->update();
+        return;
+    }
+    const double left = (selected.left() - m_imageRect.left()) / m_imageRect.width();
+    const double top = (selected.top() - m_imageRect.top()) / m_imageRect.height();
+    const double right = (selected.right() - m_imageRect.left()) / m_imageRect.width();
+    const double bottom = (selected.bottom() - m_imageRect.top()) / m_imageRect.height();
+
+    const int sourceWidth = m_pendingImage.width();
+    const int sourceHeight = m_pendingImage.height();
+    const int x = qBound(0, qFloor(left * sourceWidth), sourceWidth - 1);
+    const int y = qBound(0, qFloor(top * sourceHeight), sourceHeight - 1);
+    const int cropRight = qBound(x + 1, qCeil(right * sourceWidth), sourceWidth);
+    const int cropBottom = qBound(y + 1, qCeil(bottom * sourceHeight), sourceHeight);
+    const QRect sourceCrop(x, y, cropRight - x, cropBottom - y);
+    const QRectF oldPageRect = m_imageRect;
+    const QImage cropped = m_pendingImage.copy(sourceCrop);
+    if (cropped.isNull())
+        return;
+
+    m_imageRect = QRectF(oldPageRect.left() + left * oldPageRect.width(),
+                         oldPageRect.top() + top * oldPageRect.height(),
+                         (right - left) * oldPageRect.width(),
+                         (bottom - top) * oldPageRect.height());
+    m_pendingImage = cropped;
+    m_imageCropRect = m_imageRect;
+    viewport()->setCursor(Qt::CrossCursor);
+    emit pendingChangesChanged();
+    viewport()->update();
 }
 
 int PageView::imageHandleAt(const QPoint &viewportPos) const
@@ -914,7 +1015,8 @@ int PageView::imageHandleAt(const QPoint &viewportPos) const
 
 void PageView::updateImageCursor(const QPoint &viewportPos)
 {
-    const int handle = imageHandleAt(viewportPos);
+    const int handle = m_imageCropping
+                           ? imageCropHandleAt(viewportPos) : imageHandleAt(viewportPos);
     if (handle == 0 || handle == 3)
         viewport()->setCursor(Qt::SizeFDiagCursor);
     else if (handle == 1 || handle == 2)
@@ -935,10 +1037,38 @@ void PageView::drawImagePlacement(QPainter &painter, const QRect &pageRect)
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     painter.drawImage(px, m_pendingImage);
 
+    if (m_imageCropping) {
+        const QRectF cropRect = imageCropPixelRect();
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0, 125));
+        painter.drawRect(QRectF(px.left(), px.top(), px.width(), cropRect.top() - px.top()));
+        painter.drawRect(QRectF(px.left(), cropRect.bottom(),
+                                px.width(), px.bottom() - cropRect.bottom()));
+        painter.drawRect(QRectF(px.left(), cropRect.top(),
+                                cropRect.left() - px.left(), cropRect.height()));
+        painter.drawRect(QRectF(cropRect.right(), cropRect.top(),
+                                px.right() - cropRect.right(), cropRect.height()));
+        painter.setPen(QPen(Qt::white, 2, Qt::DashLine));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(cropRect);
+        painter.setPen(QPen(QColor(0, 102, 204), 1));
+        painter.setBrush(Qt::white);
+        const QPointF cropCorners[] = {
+            cropRect.topLeft(), cropRect.topRight(),
+            cropRect.bottomLeft(), cropRect.bottomRight()
+        };
+        for (const QPointF &corner : cropCorners)
+            painter.drawRect(QRectF(corner.x() - 5, corner.y() - 5, 10, 10));
+    }
+
+    if (m_imageCropping) {
+        painter.restore();
+        return;
+    }
+
     painter.setPen(QPen(QColor(0, 102, 204), 2, Qt::DashLine));
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(px);
-
     painter.setPen(QPen(QColor(0, 102, 204), 1));
     painter.setBrush(Qt::white);
     const QPointF corners[4] = { px.topLeft(), px.topRight(), px.bottomLeft(), px.bottomRight() };
@@ -1042,6 +1172,22 @@ void PageView::mousePressEvent(QMouseEvent *event)
     if (m_imageActive) {
         if (event->button() != Qt::LeftButton)
             return;
+        if (m_imageCropping) {
+            const int handle = imageCropHandleAt(pos);
+            if (handle >= 0) {
+                m_imageCropDragging = true;
+                switch (handle) {
+                case 0: m_imageCropAnchor = m_imageCropRect.bottomRight(); break;
+                case 1: m_imageCropAnchor = m_imageCropRect.bottomLeft(); break;
+                case 2: m_imageCropAnchor = m_imageCropRect.topRight(); break;
+                default: m_imageCropAnchor = m_imageCropRect.topLeft(); break;
+                }
+            } else {
+                m_imageDrag = ImageDrag::Move;
+                m_imageGrab = pagePointFor(m_imagePage, pos) - m_imageRect.topLeft();
+            }
+            return;
+        }
         const int handle = imageHandleAt(pos);
         if (handle >= 0) {
             m_imageDrag = ImageDrag::Resize;
@@ -1088,6 +1234,7 @@ void PageView::mousePressEvent(QMouseEvent *event)
         m_imageRect = rect;
         m_imageAwaiting = false;
         m_imageActive = true;
+        emit imagePlacementStateChanged(true, true);
         emit pendingChangesChanged();
         viewport()->update();
         return;
@@ -1170,6 +1317,21 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
     const QPoint pos = event->position().toPoint();
 
     if (m_imageActive) {
+        if (m_imageCropping) {
+            if (m_imageCropDragging)
+                updateImageCropRect(pos);
+            else {
+                const int handle = imageCropHandleAt(pos);
+                if (handle >= 0)
+                    viewport()->setCursor((handle == 0 || handle == 3)
+                                              ? Qt::SizeFDiagCursor : Qt::SizeBDiagCursor);
+                else if (imagePixelRect().contains(QPointF(pos)))
+                    viewport()->setCursor(Qt::SizeAllCursor);
+                else
+                    viewport()->setCursor(Qt::ArrowCursor);
+            }
+            return;
+        }
         if (m_imageDrag == ImageDrag::None) {
             updateImageCursor(pos);
             return;
@@ -1269,6 +1431,13 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
     if (m_imageDrag != ImageDrag::None) {
         m_imageDrag = ImageDrag::None;
         viewport()->update();
+        return;
+    }
+
+    if (m_imageCropping && m_imageCropDragging && event->button() == Qt::LeftButton) {
+        updateImageCropRect(event->position().toPoint());
+        m_imageCropDragging = false;
+        applyImageCrop();
         return;
     }
 

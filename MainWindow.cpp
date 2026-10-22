@@ -19,6 +19,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QInputDialog>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -181,6 +182,33 @@ void MainWindow::setupViewer()
         updateTitle();
     });
     connect(m_view, &PageView::imagePlaced, this, &MainWindow::placeImage);
+    connect(m_view, &PageView::imagePlacementStateChanged, this,
+            [this](bool active, bool positioned) {
+        m_cancelImageAction->setEnabled(active);
+        m_cropImageAction->setEnabled(positioned);
+        if (!positioned) {
+            QSignalBlocker blocker(m_cropImageAction);
+            m_cropImageAction->setChecked(false);
+        }
+    });
+    connect(m_view, &PageView::imageCropModeChanged, this, [this](bool active) {
+        {
+            QSignalBlocker blocker(m_cropImageAction);
+            m_cropImageAction->setChecked(active);
+        }
+        if (active) {
+            statusBar()->showMessage(
+                "Crop mode: drag a corner inward to crop. Select Crop again to finish cropping.",
+                12000);
+        } else if (m_cancelImageAction->isEnabled()) {
+            statusBar()->showMessage(
+                "Image placement: drag to move or resize. Select Crop to crop; Enter places; "
+                "Esc cancels.",
+                12000);
+        } else {
+            statusBar()->clearMessage();
+        }
+    });
     m_view->setFormFieldHandler(
         [this](int page, const QPointF &point, PageView::FormField *field) {
             return fillFormField(page, point, field);
@@ -448,6 +476,21 @@ void MainWindow::setupImageToolbar()
     toolbar->setMovable(false);
 
     toolbar->addAction(m_addImageAction);
+    toolbar->addSeparator();
+
+    m_cropImageAction = toolbar->addAction("Crop");
+    m_cropImageAction->setCheckable(true);
+    m_cropImageAction->setEnabled(false);
+    connect(m_cropImageAction, &QAction::toggled,
+            m_view, &PageView::setImageCropMode);
+
+    m_cancelImageAction = toolbar->addAction("Cancel");
+    m_cancelImageAction->setEnabled(false);
+    m_cancelImageAction->setShortcut(QKeySequence(Qt::Key_Escape));
+    m_cancelImageAction->setShortcutContext(Qt::WindowShortcut);
+    addAction(m_cancelImageAction);
+    connect(m_cancelImageAction, &QAction::triggered,
+            m_view, &PageView::cancelImagePlacement);
 }
 
 void MainWindow::setupTextToolbar()
@@ -1281,8 +1324,8 @@ void MainWindow::addImage()
 
     m_view->beginImagePlacement(image);
     statusBar()->showMessage(
-        "Click on the page where the image goes. Drag to move it, drag a corner to resize, "
-        "Enter or a click elsewhere places it, Esc cancels.", 12000);
+        "Click on the page where the image goes. Drag to move or resize. Use Crop to crop, "
+        "Enter or a click elsewhere places it, Cancel or Esc stops placement.", 12000);
 }
 
 void MainWindow::placeImage(int page, const QRectF &box, const QImage &image)

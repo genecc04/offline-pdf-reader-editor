@@ -91,6 +91,8 @@ public:
     void setFormFields(int page, const QVector<FormField> &fields);
     void clearFormFieldOverlays();
     bool hasPendingChanges() const;
+    void setImageCropMode(bool active);
+    void cancelImagePlacement();
 
     void setDrawToolActive(bool active);
     void setDrawStyle(const DrawStyle &style);
@@ -117,6 +119,8 @@ signals:
     void pendingStrokesChanged();
     void pendingChangesChanged();
     void imagePlaced(int page, const QRectF &boxPoints, const QImage &image);
+    void imagePlacementStateChanged(bool active, bool positioned);
+    void imageCropModeChanged(bool active);
     void textSelected();
     void openRequested();
 
@@ -173,6 +177,10 @@ private:
     void finishImage(bool commit);
     void drawImagePlacement(QPainter &painter, const QRect &pageRect);
     QRectF imagePixelRect() const;
+    void updateImageCropRect(const QPoint &viewportPos);
+    void applyImageCrop();
+    QRectF imageCropPixelRect() const;
+    int imageCropHandleAt(const QPoint &viewportPos) const;
     int imageHandleAt(const QPoint &viewportPos) const;
     void updateImageCursor(const QPoint &viewportPos);
 
@@ -222,6 +230,10 @@ private:
     QImage m_pendingImage;
     bool m_imageAwaiting = false;
     bool m_imageActive = false;
+    bool m_imageCropping = false;
+    bool m_imageCropDragging = false;
+    QPointF m_imageCropAnchor;
+    QRectF m_imageCropRect;
     int m_imagePage = -1;
     QRectF m_imageRect;
     ImageDrag m_imageDrag = ImageDrag::None;

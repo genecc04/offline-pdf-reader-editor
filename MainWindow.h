@@ -127,6 +127,8 @@ private:
     QAction *m_deletePageAction = nullptr;
     QAction *m_drawAction = nullptr;
     QAction *m_addImageAction = nullptr;
+    QAction *m_cropImageAction = nullptr;
+    QAction *m_cancelImageAction = nullptr;
     QString m_newPassword;
     QAction *m_setPasswordAction = nullptr;
     QAction *m_removePasswordAction = nullptr;

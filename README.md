@@ -31,8 +31,9 @@ network features.
   full color picker. Drag a box on the page, type, then click elsewhere to place it
 - Draw with a pen, a highlighter or white-out, with adjustable size, color and opacity
 - Highlight every occurrence of a word or phrase
-- Add images and signatures. Pick a file, click the page, then drag to move it and
-  drag a corner to resize
+- Add images and signatures. Pick a file and click the page. Use Crop in the image
+  toolbar and drag a corner handle inward to crop; switch Crop off to move or resize.
+  Select Cancel or press Esc to stop placing the image
 
 **Security**
 - Add, change or remove a password (AES-256)
