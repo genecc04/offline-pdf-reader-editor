@@ -140,6 +140,8 @@ This project is licensed under the **GNU Affero General Public License v3.0**.
 See [LICENSE](LICENSE). Copyright (C) 2026 genecc04.
 
 It uses [Qt](https://www.qt.io) (LGPL-3.0) and [MuPDF](https://mupdf.com)
-(AGPL-3.0, Artifex Software, Inc.), among other libraries. Their licenses are in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and the full texts are in the
-[licenses](licenses/) folder.
+(AGPL-3.0, Artifex Software, Inc.), among other libraries. The known dependency
+inventory and available license texts are documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the [licenses](licenses/)
+folder. The Qt PDF/PDFium section identifies upstream notices that still need
+exact-package verification before a binary release.

@@ -1,46 +1,120 @@
 # Third-Party Notices
 
-This project uses the following third-party software.
+This file records third-party software identified in the project's current
+development configuration. It is an inventory, not legal advice or a
+certification that a particular source or binary distribution satisfies every
+license obligation.
 
-## Qt 6 (Core, Gui, Widgets, Pdf, PdfWidgets)
+## Scope of this inventory
 
-- Project: https://www.qt.io
-- Version used for the development build: Qt 6.8.0 (MSVC 2022 package).
-- License: this project uses Qt under the GNU Lesser General Public License
-  v3.0 (LGPL-3.0); see `licenses/LGPL-3.0.txt` and `licenses/GPL-3.0.txt`.
-  Qt licensing information: https://www.qt.io/licensing/
-- Qt is dynamically linked. The Windows release package keeps Qt DLLs as
-  separate files beside the application so users can replace them with
-  compatible modified versions. Do not add technical or license restrictions
-  that prevent this or LGPL-permitted reverse engineering for debugging changes
-  to the Qt libraries.
-- Qt 6.8.0 source archives: https://download.qt.io/archive/qt/6.8/6.8.0/
-- Qt PDF licensing and third-party notices:
-  https://doc.qt.io/qt-6.8/qtpdf-licensing.html
-  https://doc.qt.io/qt-6.8/qtpdf-3rdparty-pdfium.html
-  https://doc.qt.io/qt-6.8/qtpdf-3rdparty-the-chromium-project.html
-- Qt PDF includes PDFium and other third-party components with their own
-  licenses. For binary distribution, verify and include the applicable notices
-  and license texts for the exact Qt 6.8.0 package being shipped. The links
-  above identify the upstream licensing information; this repository does not
-  currently vendor the complete Qt PDF third-party notice set.
+The versions below reflect the maintainer's development setup: Qt 6.8.0 for
+MSVC 2022 and MuPDF 1.26.10 from vcpkg using the `x64-windows-static-md`
+triplet. The vcpkg component versions were read from that local installation.
+Other Qt installations, vcpkg baselines, features, or triplets can produce a
+different dependency set and must be checked separately.
 
-## MuPDF
+The source repository does not include Qt or MuPDF binaries. The application
+links to Qt dynamically and links MuPDF statically when built with the
+configuration above. A public source repository and a distributed executable
+are different distribution cases; these notices alone do not satisfy all
+requirements for distributing a binary.
 
-- Project: https://mupdf.com (Artifex Software, Inc.)
-- Version used for the development build: 1.26.10, installed through vcpkg
-  with the `x64-windows-static-md` triplet.
-- License: GNU Affero General Public License v3.0
-  (see licenses/AGPL-3.0.txt and licenses/vcpkg/libmupdf-copyright.txt)
-- Used for: saving PDFs and PDF editing (in development)
-- Linked statically.
-- A binary release must be accompanied by the corresponding source and build
-  materials required by the AGPL-3.0 for the exact MuPDF build and this
-  application. The Qt packaging script does not create that source offer.
+## Qt
 
-## Libraries installed with MuPDF through vcpkg
+- Project: [Qt](https://www.qt.io/)
+- Development version and kit: Qt 6.8.0, MSVC 2022, 64-bit.
+- CMake components requested by this project: Widgets, Pdf, and PdfWidgets
+  (with their Qt dependencies).
+- The packaging run's `windeployqt` output also selected Qt Core, Gui, Network,
+  Svg, and Widgets runtime libraries and plugins. The exact deployed set can
+  vary with the Qt installation and build.
+- The maintainer reports using the LGPL-3.0 option. Confirm the selected terms
+  and eligibility for the exact installed Qt modules and package before
+  distributing the application.
+- License texts in this repository: `licenses/LGPL-3.0.txt` and
+  `licenses/GPL-3.0.txt`.
+- General licensing information:
+  [Qt licensing](https://www.qt.io/licensing/).
 
-MuPDF is built with vcpkg, which also builds and links its dependencies
-(FreeType, HarfBuzz, libjpeg-turbo, OpenJPEG, zlib, Gumbo, jbig2dec, and
-related libraries). Each has its own license. The copyright and license
-files that vcpkg installed for them are in licenses/vcpkg/.
+### Qt PDF and PDFium
+
+Qt PDF uses PDFium and includes third-party components associated with the
+Chromium project. Their licenses and required notices are separate from Qt's
+own license and can vary with the exact Qt PDF source and binary package.
+Consult the documentation for the version being used:
+
+- [Qt PDF licensing](https://doc.qt.io/qt-6.8/qtpdf-licensing.html)
+- [PDFium notices in Qt PDF 6.8](https://doc.qt.io/qt-6.8/qtpdf-3rdparty-pdfium.html)
+- [Chromium-project notices in Qt PDF 6.8](https://doc.qt.io/qt-6.8/qtpdf-3rdparty-the-chromium-project.html)
+- [Qt 6.8.0 source archive](https://download.qt.io/archive/qt/6.8/6.8.0/)
+
+The project has not independently inventoried every PDFium/Chromium component
+in the installed Qt 6.8.0 package or copied that package's complete notice set
+into this repository. This is an explicit unresolved item for any binary
+release: inspect the exact Qt 6.8.0 package's accompanying notices and include
+all notices and license texts required for that package. Do not treat the
+upstream documentation links alone as proof that a release archive is complete.
+
+## MuPDF and vcpkg-built dependencies
+
+MuPDF is provided by [Artifex Software](https://mupdf.com/).
+The development build uses MuPDF 1.26.10, statically linked from the vcpkg
+`x64-windows-static-md` triplet. The vcpkg-installed copyright and license
+notices for MuPDF and the dependencies listed below are kept in
+`licenses/vcpkg/`.
+
+| Component | Installed version | License identified in the installed package | Notice file |
+|---|---:|---|---|
+| MuPDF | 1.26.10 | GNU AGPL v3.0 only | `licenses/vcpkg/libmupdf-copyright.txt`; license text: `licenses/AGPL-3.0.txt` |
+| FreeType | 2.14.3 | FreeType License (FTL) or GPL-2.0-or-later | `licenses/vcpkg/freetype-copyright.txt` |
+| Gumbo | 0.14.1 | Apache License 2.0 | `licenses/vcpkg/gumbo-copyright.txt` |
+| HarfBuzz | 14.5.1 | MIT-family licenses; see the included notice for component-specific terms | `licenses/vcpkg/harfbuzz-copyright.txt` |
+| jbig2dec | 0.20 | GNU AGPL v3.0 | `licenses/vcpkg/jbig2dec-copyright.txt`; license text: `licenses/AGPL-3.0.txt` |
+| libjpeg-turbo | 3.2.0 | BSD 3-Clause and Independent JPEG Group (IJG) license terms | `licenses/vcpkg/libjpeg-turbo-copyright.txt` |
+| OpenJPEG | 2.5.4 | BSD 2-Clause | `licenses/vcpkg/openjpeg-copyright.txt` |
+| zlib | 1.3.2 | zlib license | `licenses/vcpkg/zlib-copyright.txt` |
+| Brotli | 1.2.0 | MIT | `licenses/vcpkg/brotli-copyright.txt` |
+| bzip2 | 1.0.8 | bzip2 license | `licenses/vcpkg/bzip2-copyright.txt` |
+| libpng | 1.6.59 | libpng License version 2 | `licenses/vcpkg/libpng-copyright.txt` |
+| libspng | 0.7.4 | BSD 2-Clause and libpng License version 2 | `licenses/vcpkg/libspng-copyright.txt` |
+
+Some listed libraries are transitive dependencies of other libraries in the
+MuPDF build. The table records the installed package set, not a claim that the
+application calls each library directly. The accompanying copyright files
+contain the applicable notices and, where supplied by vcpkg, license text.
+
+The installed MuPDF port metadata reports AGPL-3.0-only. Static linking is
+therefore a material release consideration. Before distributing a binary,
+determine and meet the obligations that apply to the exact MuPDF build and
+combined application, including any required corresponding source and build
+materials. The packaging script does not provide those materials. Obtain legal
+advice if you need a determination of how the license applies to this project.
+
+## Build and packaging tools
+
+The development workflow uses CMake, Visual Studio/MSVC, and vcpkg. The package
+manager and build tools are not linked into the application by this project.
+The vcpkg CMake helper ports and Meson are build-time dependencies in the
+installed vcpkg environment; they are not listed above as application runtime
+components. Re-check the toolchain's own terms if redistributing any of those
+tools.
+
+## Project files and assets
+
+The project's own source code is licensed under the GNU AGPL v3.0; see
+`LICENSE`. The application icon artwork (`resources/pdfappicon.png` and
+`resources/pdfappicon.ico`) is project artwork supplied by the maintainer and
+is not identified here as third-party material.
+
+## Before publishing or releasing
+
+- For a source-only repository, keep this inventory and the referenced license
+  texts with the project. This does not determine whether every aspect of a
+  source publication complies with every applicable license.
+- Before distributing an executable, create and review a dependency inventory
+  for the exact build, include all required notices and license texts, and
+  address the applicable obligations for the dynamically linked Qt libraries,
+  Qt PDF's PDFium/Chromium components, and statically linked MuPDF and its
+  dependencies.
+- Recheck this file whenever Qt, vcpkg, MuPDF, the triplet, or enabled features
+  change. Do not rely on this development-build snapshot as a release SBOM.
