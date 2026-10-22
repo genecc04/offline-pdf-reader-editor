@@ -5,7 +5,6 @@
 #include "PdfEditor.h"
 #include "PageRangeDialog.h"
 #include "ColorMenuButton.h"
-#include "TextRenderer.h"
 
 #include <QAction>
 #include <QApplication>
@@ -35,7 +34,6 @@
 #include <QToolBar>
 #include <QUrl>
 #include <QActionGroup>
-#include <QFontComboBox>
 #include <QBuffer>
 #include <QImageReader>
 #include <QTemporaryFile>
@@ -132,6 +130,16 @@ namespace {
         return bytes;
     }
 
+    QString annotationFontName(const PageView::TextStyle &style)
+    {
+        const QString family = style.family.toLower();
+        if (family.contains("times") || family.contains("serif"))
+            return QStringLiteral("TiRo");
+        if (family.contains("courier") || family.contains("mono"))
+            return QStringLiteral("Cour");
+        return QStringLiteral("Helv");
+    }
+
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -168,6 +176,18 @@ void MainWindow::setupViewer()
     setCentralWidget(m_view);
 
     connect(m_view, &PageView::textPlaced, this, &MainWindow::placeText);
+    connect(m_view, &PageView::textAnnotationEditRequested, m_view,
+            &PageView::editTextAnnotationInline);
+    connect(m_view, &PageView::textAnnotationEdited,
+            this, &MainWindow::updateTextAnnotation);
+    connect(m_view, &PageView::textAnnotationDeleteRequested,
+            this, &MainWindow::deleteTextAnnotation);
+    connect(m_view, &PageView::textAnnotationBoundsChanged,
+            this, &MainWindow::updateTextAnnotationBounds);
+    connect(m_view, &PageView::textAnnotationSelectionChanged, this, [this](bool selected) {
+        if (m_deleteTextAction)
+            m_deleteTextAction->setEnabled(selected && m_editor != nullptr);
+    });
     connect(m_view, &PageView::textToolFinished, this, [this]() {
         m_addTextAction->setChecked(false);
     });
@@ -216,6 +236,26 @@ void MainWindow::setupViewer()
     m_view->setFormFieldValueHandler(
         [this](int page, int widgetIndex, const QString &value) {
             return commitFormField(page, widgetIndex, value);
+        });
+    m_view->setTextAnnotationHandler(
+        [this](int page, const QPointF &point, int *annotationId,
+               QRectF *bounds, QString *text, PageView::TextStyle *style) {
+            QString fontName;
+            double fontSize = 12.0;
+            QColor color;
+            if (!m_editor
+                || !m_editor->textAnnotationAt(page, point, annotationId, bounds, text,
+                                               &fontName, &fontSize, &color))
+                return false;
+
+            style->family = fontName == QLatin1String("TiRo")
+                ? QStringLiteral("Times")
+                : fontName == QLatin1String("Cour")
+                    ? QStringLiteral("Courier")
+                    : QStringLiteral("Helvetica");
+            style->sizePoints = fontSize;
+            style->color = color;
+            return true;
         });
     connect(m_view, &PageView::openRequested, this, &MainWindow::openFile);
     connect(m_view, &PageView::textSelected, this, [this]() {
@@ -343,8 +383,9 @@ void MainWindow::setupMenus()
         m_view->setTextToolActive(on);
         if (on) {
             statusBar()->showMessage(
-                "Drag a box on the page, type your text, then click elsewhere to place it "
-                "(Ctrl+Enter also places it, Esc cancels).", 10000);
+                "Drag a box on the page and type. Click elsewhere to place it. "
+                "Double-click added text to edit; right-click it to edit or delete.",
+                10000);
         }
     });
 
@@ -501,28 +542,19 @@ void MainWindow::setupTextToolbar()
     toolbar->setMovable(false);
 
     toolbar->addAction(m_addTextAction);
+    m_deleteTextAction = toolbar->addAction("Delete");
+    m_deleteTextAction->setEnabled(false);
+    m_deleteTextAction->setToolTip("Delete selected text box");
+    connect(m_deleteTextAction, &QAction::triggered,
+            m_view, &PageView::deleteSelectedTextAnnotation);
+    toolbar->addSeparator();
 
-    auto *fontBox = new QFontComboBox(this);
-    fontBox->setEditable(false);
-    fontBox->setFontFilters(QFontComboBox::ScalableFonts);
-    fontBox->setCurrentFont(QFont("Arial"));
-    fontBox->setMinimumWidth(190);
+    auto *fontBox = new QComboBox(this);
+    fontBox->addItems({ "Helvetica", "Times", "Courier" });
+    fontBox->setCurrentText("Helvetica");
+    fontBox->setMinimumWidth(130);
     fontBox->setFocusPolicy(Qt::NoFocus);
     toolbar->addWidget(fontBox);
-
-    QAction *boldAction = toolbar->addAction("B");
-    boldAction->setCheckable(true);
-    boldAction->setToolTip("Bold");
-    QFont boldFont = boldAction->font();
-    boldFont.setBold(true);
-    boldAction->setFont(boldFont);
-
-    QAction *italicAction = toolbar->addAction("I");
-    italicAction->setCheckable(true);
-    italicAction->setToolTip("Italic");
-    QFont italicFont = italicAction->font();
-    italicFont.setItalic(true);
-    italicAction->setFont(italicFont);
 
     auto *size = new QSpinBox(this);
     size->setRange(6, 200);
@@ -534,18 +566,14 @@ void MainWindow::setupTextToolbar()
     auto *colorButton = new ColorMenuButton(QColor(0, 0, 0), this);
     toolbar->addWidget(colorButton);
 
-    auto applyStyle = [this, fontBox, boldAction, italicAction, size, colorButton]() {
+    auto applyStyle = [this, fontBox, size, colorButton]() {
         PageView::TextStyle style;
-        style.family = fontBox->currentFont().family();
-        style.bold = boldAction->isChecked();
-        style.italic = italicAction->isChecked();
+        style.family = fontBox->currentText();
         style.sizePoints = size->value();
         style.color = colorButton->color();
         m_view->setTextStyle(style);
     };
-    connect(fontBox, &QFontComboBox::currentFontChanged, this, applyStyle);
-    connect(boldAction, &QAction::toggled, this, applyStyle);
-    connect(italicAction, &QAction::toggled, this, applyStyle);
+    connect(fontBox, &QComboBox::currentTextChanged, this, applyStyle);
     connect(size, &QSpinBox::valueChanged, this, applyStyle);
     connect(colorButton, &ColorMenuButton::colorChanged, this, applyStyle);
 
@@ -1278,14 +1306,64 @@ void MainWindow::placeText(int page, const QRectF &box, const QString &text,
     if (!m_editor)
         return;
 
-    const QByteArray png = renderTextToPng(text, style, box.size());
-    if (png.isEmpty()) {
-        QMessageBox::warning(this, "Add text failed", "Could not draw the text.");
+    if (!m_editor->addTextBox(page, box, text, annotationFontName(style),
+                              style.sizePoints, style.color.redF(),
+                              style.color.greenF(), style.color.blueF())) {
+        QMessageBox::warning(this, "Add text failed", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return;
+    }
+    refreshAfterPageEdit({ page }, page);
+}
+
+void MainWindow::updateTextAnnotation(int page, int annotationId,
+                                      const QString &oldText, const QString &newText)
+{
+    if (!m_editor)
+        return;
+
+    if (newText == oldText)
+        return;
+    if (newText.trimmed().isEmpty()) {
+        QMessageBox::warning(this, "Edit added text",
+                             "Text cannot be empty. Use Delete added text to remove it.");
+        m_view->editTextAnnotationInline(page, annotationId, oldText);
         return;
     }
 
-    if (!m_editor->addImageStamp(page, box, png)) {
-        QMessageBox::warning(this, "Add text failed", m_editor->lastError());
+    if (!m_editor->updateTextAnnotation(page, annotationId, oldText, newText)) {
+        QMessageBox::warning(this, "Edit added text", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return;
+    }
+    refreshAfterPageEdit({ page }, page);
+}
+
+void MainWindow::deleteTextAnnotation(int page, int annotationId, const QString &text)
+{
+    if (!m_editor)
+        return;
+
+    if (!m_editor->deleteTextAnnotation(page, annotationId, text)) {
+        QMessageBox::warning(this, "Delete added text", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return;
+    }
+    if (refreshAfterPageEdit({ page }, page))
+        statusBar()->showMessage("Deleted added text.", 3000);
+}
+
+void MainWindow::updateTextAnnotationBounds(int page, int annotationId,
+                                            const QString &text, const QRectF &bounds)
+{
+    if (!m_editor)
+        return;
+
+    if (!m_editor->setTextAnnotationBounds(page, annotationId, text, bounds)) {
+        QMessageBox::warning(this, "Update text box failed", m_editor->lastError());
         reopenEditor(m_history.current());
         updateActions();
         return;

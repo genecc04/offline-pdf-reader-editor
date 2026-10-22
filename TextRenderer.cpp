@@ -24,8 +24,6 @@ QByteArray renderTextToPng(const QString &text, const PageView::TextStyle &style
     image.fill(Qt::transparent);
 
     QFont font(style.family);
-    font.setBold(style.bold);
-    font.setItalic(style.italic);
     font.setPixelSize(qMax(1, qRound(style.sizePoints * kLayoutScale)));
     font.setHintingPreference(QFont::PreferNoHinting);
     font.setStyleStrategy(QFont::NoSubpixelAntialias);

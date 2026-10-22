@@ -24,6 +24,7 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QStringList>
+#include <QTextCursor>
 #include <QTimer>
 #include <QWheelEvent>
 #include <QtMath>
@@ -116,7 +117,11 @@ void PageView::onDocumentChanged()
     finishEditor(false);
     finishFormEditor(false);
     finishImage(false);
+    m_resizingTextAnnotation = false;
+    m_movingTextAnnotation = false;
+    m_textAnnotationResizeCorner = -1;
 
+    clearSelectedTextAnnotation();
     m_selecting = false;
     m_selection.clear();
     m_selStartPage = -1;
@@ -597,6 +602,27 @@ void PageView::paintEvent(QPaintEvent *event)
             painter.restore();
         }
 
+        if (m_selectedTextAnnotationPage == page) {
+            const QRectF bounds(
+                target.x() + m_selectedTextAnnotationBounds.x() * m_scale,
+                target.y() + m_selectedTextAnnotationBounds.y() * m_scale,
+                m_selectedTextAnnotationBounds.width() * m_scale,
+                m_selectedTextAnnotationBounds.height() * m_scale);
+            painter.save();
+            painter.setPen(QPen(QColor(0, 102, 204), 2, Qt::DashLine));
+            painter.setBrush(QColor(0, 102, 204, 35));
+            painter.drawRect(bounds);
+            painter.setPen(QPen(QColor(0, 102, 204), 1));
+            painter.setBrush(Qt::white);
+            const QPointF corners[] = {
+                bounds.topLeft(), bounds.topRight(),
+                bounds.bottomLeft(), bounds.bottomRight()
+            };
+            for (const QPointF &corner : corners)
+                painter.drawRect(QRectF(corner.x() - 4, corner.y() - 4, 8, 8));
+            painter.restore();
+        }
+
         for (const Stroke &stroke : std::as_const(m_strokes)) {
             if (stroke.page == page)
                 drawStroke(painter, stroke, target);
@@ -677,6 +703,14 @@ void PageView::keyPressEvent(QKeyEvent *event)
     }
     if (event->key() == Qt::Key_Escape && !m_selection.isEmpty()) {
         clearSelection();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape && m_selectedTextAnnotationPage >= 0) {
+        clearSelectedTextAnnotation();
+        return;
+    }
+    if (event->key() == Qt::Key_Delete && m_selectedTextAnnotationPage >= 0) {
+        deleteSelectedTextAnnotation();
         return;
     }
     QAbstractScrollArea::keyPressEvent(event);
@@ -788,7 +822,30 @@ void PageView::contextMenuEvent(QContextMenuEvent *event)
     if (m_textTool || m_drawTool || m_editor || m_imageAwaiting || m_imageActive)
         return;
 
+    const int page = pageAtViewportPoint(event->pos());
+    int annotationId = 0;
+    QRectF annotationBounds;
+    QString annotationText;
+    TextStyle annotationStyle;
+    const bool onAnnotation = page >= 0 && m_textAnnotationHandler
+        && m_textAnnotationHandler(page, pagePointFor(page, event->pos()),
+                                   &annotationId, &annotationBounds, &annotationText,
+                                   &annotationStyle);
+    if (onAnnotation) {
+        selectTextAnnotation(page, annotationId, annotationBounds,
+                             annotationText, annotationStyle);
+    } else {
+        clearSelectedTextAnnotation();
+    }
+
     QMenu menu(this);
+    QAction *editAnnotation = nullptr;
+    QAction *deleteAnnotation = nullptr;
+    if (m_selectedTextAnnotationPage >= 0) {
+        editAnnotation = menu.addAction("Edit added text...");
+        deleteAnnotation = menu.addAction("Delete added text");
+        menu.addSeparator();
+    }
     QAction *copy = menu.addAction("Copy");
     copy->setShortcut(QKeySequence::Copy);
     copy->setEnabled(!m_selection.isEmpty());
@@ -796,10 +853,17 @@ void PageView::contextMenuEvent(QContextMenuEvent *event)
     all->setShortcut(QKeySequence::SelectAll);
 
     const QAction *chosen = menu.exec(event->globalPos());
-    if (chosen == copy)
+    if (chosen == editAnnotation) {
+        emit textAnnotationEditRequested(m_selectedTextAnnotationPage,
+                                         m_selectedTextAnnotationId,
+                                         m_selectedTextAnnotationContents);
+    } else if (chosen == deleteAnnotation) {
+        deleteSelectedTextAnnotation();
+    } else if (chosen == copy) {
         copySelection();
-    else if (chosen == all)
+    } else if (chosen == all) {
         selectAllText();
+    }
 }
 
 // draw tool
@@ -1098,7 +1162,10 @@ void PageView::setTextToolActive(bool active)
 void PageView::setTextStyle(const TextStyle &style)
 {
     m_style = style;
-    applyEditorStyle();
+    if (m_editor && !m_editingTextAnnotation) {
+        m_editorStyle = style;
+        applyEditorStyle();
+    }
 }
 
 void PageView::setFormFieldHandler(
@@ -1111,6 +1178,92 @@ void PageView::setFormFieldValueHandler(
     const std::function<bool(int, int, const QString &)> &handler)
 {
     m_formFieldValueHandler = handler;
+}
+
+void PageView::setTextAnnotationHandler(
+    const std::function<bool(int, const QPointF &, int *, QRectF *, QString *,
+                             TextStyle *)> &handler)
+{
+    m_textAnnotationHandler = handler;
+}
+
+void PageView::editTextAnnotationInline(int page, int annotationId, const QString &text)
+{
+    if (m_selectedTextAnnotationPage != page
+        || m_selectedTextAnnotationId != annotationId)
+        return;
+
+    startAnnotationEditor(page, annotationId, m_selectedTextAnnotationBounds,
+                          text, m_selectedTextAnnotationStyle);
+}
+
+void PageView::deleteSelectedTextAnnotation()
+{
+    if (m_selectedTextAnnotationPage < 0)
+        return;
+
+    if (m_editor && m_editingTextAnnotation)
+        finishEditor(false);
+
+    const int page = m_selectedTextAnnotationPage;
+    const int annotationId = m_selectedTextAnnotationId;
+    const QString text = m_selectedTextAnnotationContents;
+    clearSelectedTextAnnotation();
+    emit textAnnotationDeleteRequested(page, annotationId, text);
+}
+
+void PageView::selectTextAnnotation(int page, int annotationId, const QRectF &bounds,
+                                    const QString &text, const TextStyle &style)
+{
+    const bool wasSelected = m_selectedTextAnnotationPage >= 0;
+    m_selectedTextAnnotationPage = page;
+    m_selectedTextAnnotationId = annotationId;
+    m_selectedTextAnnotationBounds = bounds;
+    m_selectedTextAnnotationContents = text;
+    m_selectedTextAnnotationStyle = style;
+    if (!wasSelected)
+        emit textAnnotationSelectionChanged(true);
+    viewport()->update();
+}
+
+void PageView::clearSelectedTextAnnotation()
+{
+    if (m_selectedTextAnnotationPage < 0)
+        return;
+    m_selectedTextAnnotationPage = -1;
+    m_selectedTextAnnotationId = 0;
+    m_selectedTextAnnotationBounds = QRectF();
+    m_selectedTextAnnotationContents.clear();
+    m_selectedTextAnnotationStyle = TextStyle();
+    emit textAnnotationSelectionChanged(false);
+    viewport()->update();
+}
+
+QRectF PageView::selectedTextAnnotationViewportBounds() const
+{
+    if (m_selectedTextAnnotationPage < 0
+        || m_selectedTextAnnotationPage >= m_pageRects.size())
+        return {};
+    const QRect page = pageRectInViewport(m_selectedTextAnnotationPage);
+    return QRectF(page.x() + m_selectedTextAnnotationBounds.x() * m_scale,
+                  page.y() + m_selectedTextAnnotationBounds.y() * m_scale,
+                  m_selectedTextAnnotationBounds.width() * m_scale,
+                  m_selectedTextAnnotationBounds.height() * m_scale);
+}
+
+int PageView::textAnnotationResizeHandleAt(const QPoint &pos) const
+{
+    const QRectF bounds = selectedTextAnnotationViewportBounds();
+    if (bounds.isEmpty())
+        return -1;
+    const QPointF corners[] = {
+        bounds.topLeft(), bounds.topRight(), bounds.bottomLeft(), bounds.bottomRight()
+    };
+    for (int i = 0; i < 4; ++i) {
+        if (QRectF(corners[i] - QPointF(7, 7), QSizeF(14, 14)).contains(pos))
+            return i;
+    }
+    return -1;
 }
 
 void PageView::setFormFields(int page, const QVector<FormField> &fields)
@@ -1150,8 +1303,12 @@ bool PageView::hasPendingChanges() const
 {
     if (!m_strokes.isEmpty() || m_drawing || m_erasing || m_imageActive)
         return true;
-    if (m_editor && !m_editor->toPlainText().trimmed().isEmpty())
-        return true;
+    if (m_editor) {
+        const QString text = m_editor->toPlainText();
+        if (m_editingTextAnnotation)
+            return text != m_editingTextAnnotationOriginal;
+        return !text.trimmed().isEmpty();
+    }
     return m_formEditor && formEditorValue() != m_formEditorInitialValue;
 }
 
@@ -1272,7 +1429,37 @@ void PageView::mousePressEvent(QMouseEvent *event)
 
     if (event->button() == Qt::LeftButton && !m_textTool && !m_drawTool) {
         setFocus();
+        if (m_selectedTextAnnotationPage >= 0) {
+            const int resizeCorner = textAnnotationResizeHandleAt(pos);
+            if (resizeCorner >= 0) {
+                m_resizingTextAnnotation = true;
+                m_textAnnotationResizeCorner = resizeCorner;
+                m_textAnnotationResizeOriginalBounds = m_selectedTextAnnotationBounds;
+                return;
+            }
+            if (selectedTextAnnotationViewportBounds().contains(QPointF(pos))) {
+                m_movingTextAnnotation = true;
+                m_textAnnotationMoveStart = pagePointFor(
+                    m_selectedTextAnnotationPage, pos);
+                m_textAnnotationResizeOriginalBounds = m_selectedTextAnnotationBounds;
+                return;
+            }
+        }
         const int page = pageAtViewportPoint(pos);
+        int annotationId = 0;
+        QRectF annotationBounds;
+        QString annotationText;
+        TextStyle annotationStyle;
+        if (page >= 0 && m_textAnnotationHandler
+            && m_textAnnotationHandler(page, pagePointFor(page, pos),
+                                       &annotationId, &annotationBounds, &annotationText,
+                                       &annotationStyle)) {
+            selectTextAnnotation(page, annotationId, annotationBounds,
+                                 annotationText, annotationStyle);
+            clearSelection();
+            return;
+        }
+        clearSelectedTextAnnotation();
         if (page >= 0 && m_formFieldHandler) {
             FormField field;
             if (m_formFieldHandler(page, pagePointFor(page, pos), &field)) {
@@ -1312,9 +1499,77 @@ void PageView::mousePressEvent(QMouseEvent *event)
     QAbstractScrollArea::mousePressEvent(event);
 }
 
+void PageView::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (!m_textTool && !m_drawTool && event->button() == Qt::LeftButton) {
+        const QPoint pos = event->position().toPoint();
+        const int page = pageAtViewportPoint(pos);
+        int annotationId = 0;
+        QRectF bounds;
+        QString text;
+        TextStyle style;
+        if (page >= 0 && m_textAnnotationHandler
+            && m_textAnnotationHandler(page, pagePointFor(page, pos),
+                                       &annotationId, &bounds, &text, &style)) {
+            selectTextAnnotation(page, annotationId, bounds, text, style);
+            emit textAnnotationEditRequested(page, annotationId, text);
+            return;
+        }
+    }
+    QAbstractScrollArea::mouseDoubleClickEvent(event);
+}
+
 void PageView::mouseMoveEvent(QMouseEvent *event)
 {
     const QPoint pos = event->position().toPoint();
+
+    if (m_resizingTextAnnotation) {
+        const QPointF point = pagePointFor(m_selectedTextAnnotationPage, pos);
+        const QSizeF pageSize = m_pageSizes.at(m_selectedTextAnnotationPage);
+        const qreal x = qBound(0.0, point.x(), pageSize.width());
+        const qreal y = qBound(0.0, point.y(), pageSize.height());
+        QRectF bounds = m_textAnnotationResizeOriginalBounds;
+        constexpr qreal minWidth = 20.0;
+        constexpr qreal minHeight = 14.0;
+        switch (m_textAnnotationResizeCorner) {
+        case 0:
+            bounds.setLeft(qMin(x, bounds.right() - minWidth));
+            bounds.setTop(qMin(y, bounds.bottom() - minHeight));
+            break;
+        case 1:
+            bounds.setRight(qMax(x, bounds.left() + minWidth));
+            bounds.setTop(qMin(y, bounds.bottom() - minHeight));
+            break;
+        case 2:
+            bounds.setLeft(qMin(x, bounds.right() - minWidth));
+            bounds.setBottom(qMax(y, bounds.top() + minHeight));
+            break;
+        case 3:
+            bounds.setRight(qMax(x, bounds.left() + minWidth));
+            bounds.setBottom(qMax(y, bounds.top() + minHeight));
+            break;
+        default:
+            break;
+        }
+        m_selectedTextAnnotationBounds = bounds;
+        viewport()->update();
+        return;
+    }
+
+    if (m_movingTextAnnotation) {
+        const QPointF point = pagePointFor(m_selectedTextAnnotationPage, pos);
+        const QSizeF pageSize = m_pageSizes.at(m_selectedTextAnnotationPage);
+        const QPointF delta = point - m_textAnnotationMoveStart;
+        QRectF bounds = m_textAnnotationResizeOriginalBounds;
+        const qreal x = qBound(0.0, bounds.left() + delta.x(),
+                               qMax(0.0, pageSize.width() - bounds.width()));
+        const qreal y = qBound(0.0, bounds.top() + delta.y(),
+                               qMax(0.0, pageSize.height() - bounds.height()));
+        bounds.moveTopLeft(QPointF(x, y));
+        m_selectedTextAnnotationBounds = bounds;
+        viewport()->update();
+        return;
+    }
 
     if (m_imageActive) {
         if (m_imageCropping) {
@@ -1400,13 +1655,48 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    if (!m_textTool && !m_drawTool && !m_imageAwaiting && !m_editor)
-        viewport()->setCursor(pageAtViewportPoint(pos) >= 0 ? Qt::IBeamCursor : Qt::ArrowCursor);
+    if (!m_textTool && !m_drawTool && !m_imageAwaiting && !m_editor) {
+        const int handle = textAnnotationResizeHandleAt(pos);
+        if (handle >= 0) {
+            viewport()->setCursor((handle == 0 || handle == 3)
+                                      ? Qt::SizeFDiagCursor : Qt::SizeBDiagCursor);
+        } else if (selectedTextAnnotationViewportBounds().contains(QPointF(pos))) {
+            viewport()->setCursor(Qt::SizeAllCursor);
+        } else {
+            viewport()->setCursor(pageAtViewportPoint(pos) >= 0
+                                      ? Qt::IBeamCursor : Qt::ArrowCursor);
+        }
+    }
     QAbstractScrollArea::mouseMoveEvent(event);
 }
 
 void PageView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_movingTextAnnotation && event->button() == Qt::LeftButton) {
+        m_movingTextAnnotation = false;
+        viewport()->setCursor(Qt::ArrowCursor);
+        if (m_selectedTextAnnotationBounds != m_textAnnotationResizeOriginalBounds) {
+            emit textAnnotationBoundsChanged(m_selectedTextAnnotationPage,
+                                             m_selectedTextAnnotationId,
+                                             m_selectedTextAnnotationContents,
+                                             m_selectedTextAnnotationBounds);
+        }
+        return;
+    }
+
+    if (m_resizingTextAnnotation && event->button() == Qt::LeftButton) {
+        m_resizingTextAnnotation = false;
+        m_textAnnotationResizeCorner = -1;
+        viewport()->setCursor(Qt::ArrowCursor);
+        if (m_selectedTextAnnotationBounds != m_textAnnotationResizeOriginalBounds) {
+            emit textAnnotationBoundsChanged(m_selectedTextAnnotationPage,
+                                             m_selectedTextAnnotationId,
+                                             m_selectedTextAnnotationContents,
+                                             m_selectedTextAnnotationBounds);
+        }
+        return;
+    }
+
     if (m_erasing && event->button() == Qt::LeftButton) {
         const int page = m_erasePage;
         const QVector<QPointF> path = m_erasePoints;
@@ -1486,6 +1776,10 @@ void PageView::startEditor(int page, const QRectF &boxPoints)
 {
     m_editorPage = page;
     m_editorBox = boxPoints;
+    m_editorStyle = m_style;
+    m_editingTextAnnotation = false;
+    m_editingTextAnnotationId = 0;
+    m_editingTextAnnotationOriginal.clear();
 
     m_editor = new QPlainTextEdit(viewport());
     m_editor->setFrameShape(QFrame::NoFrame);
@@ -1499,22 +1793,37 @@ void PageView::startEditor(int page, const QRectF &boxPoints)
     emit pendingChangesChanged();
 }
 
+void PageView::startAnnotationEditor(int page, int annotationId,
+                                     const QRectF &boxPoints, const QString &text,
+                                     const TextStyle &style)
+{
+    finishEditor(false);
+    m_textTool = false;
+    startEditor(page, boxPoints);
+    m_editingTextAnnotation = true;
+    m_editingTextAnnotationId = annotationId;
+    m_editingTextAnnotationOriginal = text;
+    m_editorStyle = style;
+    m_editor->setPlainText(text);
+    m_editor->moveCursor(QTextCursor::End);
+    applyEditorStyle();
+    m_editor->setFocus();
+}
+
 void PageView::applyEditorStyle()
 {
     if (!m_editor)
         return;
 
-    const QString background = m_style.color.lightness() > 200
+    const QString background = m_editorStyle.color.lightness() > 200
         ? QStringLiteral("rgba(60,60,60,225)")
         : QStringLiteral("rgba(255,255,255,215)");
 
     m_editor->setStyleSheet(
         QStringLiteral("QPlainTextEdit { color: %1; background: %2; border: 2px solid #0066cc;"
-                       " font-family: \"%3\"; font-size: %4px; font-weight: %5; font-style: %6; }")
-            .arg(m_style.color.name(), background, m_style.family)
-            .arg(qMax(4, int(m_style.sizePoints * m_scale)))
-            .arg(m_style.bold ? QStringLiteral("bold") : QStringLiteral("normal"),
-                 m_style.italic ? QStringLiteral("italic") : QStringLiteral("normal")));
+                       " font-family: \"%3\"; font-size: %4px; }")
+            .arg(m_editorStyle.color.name(), background, m_editorStyle.family)
+            .arg(qMax(4, int(m_editorStyle.sizePoints * m_scale))));
 }
 
 void PageView::positionEditor()
@@ -1536,21 +1845,35 @@ void PageView::finishEditor(bool commit)
     QPlainTextEdit *editor = m_editor;
     m_editor = nullptr;
 
-    const QString text = editor->toPlainText().trimmed();
+    const QString text = editor->toPlainText();
     const int page = m_editorPage;
     const QRectF box = m_editorBox;
-    const TextStyle style = m_style;
+    const TextStyle style = m_editorStyle;
+    const bool editingAnnotation = m_editingTextAnnotation;
+    const int annotationId = m_editingTextAnnotationId;
+    const QString originalText = m_editingTextAnnotationOriginal;
+    m_editingTextAnnotation = false;
+    m_editingTextAnnotationId = 0;
+    m_editingTextAnnotationOriginal.clear();
 
     editor->hide();
     editor->deleteLater();
 
-    m_textTool = false;
-    viewport()->setCursor(Qt::ArrowCursor);
-    setFocus();
-    emit textToolFinished();
+    if (!editingAnnotation) {
+        m_textTool = false;
+        viewport()->setCursor(Qt::ArrowCursor);
+        setFocus();
+        emit textToolFinished();
+    }
 
-    if (commit && !text.isEmpty())
-        emit textPlaced(page, box, text, style);
+    if (commit) {
+        if (editingAnnotation) {
+            if (text != originalText)
+                emit textAnnotationEdited(page, annotationId, originalText, text);
+        } else if (!text.trimmed().isEmpty()) {
+            emit textPlaced(page, box, text.trimmed(), style);
+        }
+    }
     emit pendingChangesChanged();
 }
 

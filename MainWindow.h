@@ -74,6 +74,11 @@ private:
     void highlightText();
     void placeText(int page, const QRectF &box, const QString &text,
                    const PageView::TextStyle &style);
+    void updateTextAnnotation(int page, int annotationId,
+                              const QString &oldText, const QString &newText);
+    void updateTextAnnotationBounds(int page, int annotationId, const QString &text,
+                                    const QRectF &bounds);
+    void deleteTextAnnotation(int page, int annotationId, const QString &text);
     bool refreshAfterEdit(int page, const QList<int> &reselect = {});
     bool refreshAfterPageEdit(const QList<int> &changedPages, int page);
     QList<int> targetPages() const;
@@ -122,6 +127,7 @@ private:
     QAction *m_redoAction = nullptr;
     QAction *m_highlightAction = nullptr;
     QAction *m_addTextAction = nullptr;
+    QAction *m_deleteTextAction = nullptr;
     QAction *m_rotateLeftAction = nullptr;
     QAction *m_rotateRightAction = nullptr;
     QAction *m_deletePageAction = nullptr;

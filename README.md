@@ -27,8 +27,7 @@ network features.
 
 **Marking up and filling out**
 - Fill out forms: type text into the blanks, draw check marks, and add your signature
-- Add text in any font installed on your computer, with size, bold, italic and a
-  full color picker. Drag a box on the page, type, then click elsewhere to place it
+- Add editable PDF text annotations with size and color controls.
 - Draw with a pen, a highlighter or white-out, with adjustable size, color and opacity
 - Highlight every occurrence of a word or phrase
 - Add images and signatures. Pick a file and click the page. Use Crop in the image
@@ -75,8 +74,8 @@ which most computers already have.
   and other programs that read form data will not see it.
 - **White-out only covers.** The text under it is still in the file, so search and
   copy still find it. Don't use it to hide anything sensitive.
-- **Added text is placed as a picture** (so any font works), which means it can't be
-  selected, searched or edited afterwards. Undo and delete still work.
+- Added text uses only the standard PDF fonts Helvetica, Times, and Courier for
+  cross-viewer compatibility.
 - Links inside PDFs are not clickable yet, and double-click does not select a word.
 - Scanned PDFs have no text to select or search (there is no OCR).
 - Inserting pages from a password-protected PDF is not supported.

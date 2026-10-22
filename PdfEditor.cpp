@@ -1,6 +1,7 @@
 #include "PdfEditor.h"
 
 #include <QByteArray>
+#include <QUuid>
 #include <vector>
 #include <cstring>
 
@@ -90,6 +91,13 @@ double segmentDistanceSquared(const QPointF &a, const QPointF &b,
                      pointSegmentDistanceSquared(b, c, d)),
                 qMin(pointSegmentDistanceSquared(c, a, b),
                      pointSegmentDistanceSquared(d, a, b)));
+}
+
+bool isAppTextAnnotation(fz_context *ctx, pdf_annot *annot)
+{
+    const char *name = pdf_to_text_string(
+        ctx, pdf_dict_gets(ctx, pdf_annot_obj(ctx, annot), "NM"));
+    return name && QByteArray(name).startsWith("OfflinePdfReaderText:");
 }
 
 bool inkStrokeIntersectsPath(fz_context *ctx, pdf_annot *annot, int stroke,
@@ -599,6 +607,9 @@ bool PdfEditor::addTextBox(int pageIndex, const QRectF &box, const QString &text
 
     const QByteArray textUtf8 = text.toUtf8();
     const QByteArray fontUtf8 = fontName.toUtf8();
+    const QByteArray annotationName =
+        QStringLiteral("OfflinePdfReaderText:")
+        .append(QUuid::createUuid().toString(QUuid::WithoutBraces)).toUtf8();
     const char *cText = textUtf8.constData();
     const char *cFont = fontUtf8.constData();
     const float color[3] = { red, green, blue };
@@ -606,17 +617,96 @@ bool PdfEditor::addTextBox(int pageIndex, const QRectF &box, const QString &text
                                       float(box.right()), float(box.bottom()));
 
     pdf_page *page = nullptr;
+    pdf_annot *annot = nullptr;
     fz_var(page);
+    fz_var(annot);
 
     fz_try(m_ctx)
     {
         page = pdf_load_page(m_ctx, m_doc, pageIndex);
 
-        pdf_annot *annot = pdf_create_annot(m_ctx, page, PDF_ANNOT_FREE_TEXT);
+        annot = pdf_create_annot(m_ctx, page, PDF_ANNOT_FREE_TEXT);
+        pdf_dict_puts_drop(m_ctx, pdf_annot_obj(m_ctx, annot), "NM",
+                           pdf_new_text_string(m_ctx, annotationName.constData()));
         pdf_set_annot_rect(m_ctx, annot, rect);
         pdf_set_annot_default_appearance(m_ctx, annot, cFont, float(fontSize), 3, color);
         pdf_set_annot_contents(m_ctx, annot, cText);
         pdf_update_annot(m_ctx, annot);
+    }
+    fz_always(m_ctx)
+    {
+        if (annot)
+            pdf_drop_annot(m_ctx, annot);
+        if (page)
+            fz_drop_page(m_ctx, &page->super);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    return true;
+}
+
+bool PdfEditor::textAnnotationAt(int pageIndex, const QPointF &point,
+                                 int *annotationId, QRectF *bounds, QString *text,
+                                 QString *fontName, double *fontSize, QColor *color)
+{
+    m_error.clear();
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (!annotationId || !bounds || !text || !fontName || !fontSize || !color) {
+        m_error = "No text annotation result was provided.";
+        return false;
+    }
+
+    pdf_page *page = nullptr;
+    bool found = false;
+    fz_var(page);
+    fz_var(found);
+
+    fz_try(m_ctx)
+    {
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+        for (pdf_annot *annot = pdf_first_annot(m_ctx, page); annot;
+             annot = pdf_next_annot(m_ctx, annot)) {
+            if (pdf_annot_type(m_ctx, annot) != PDF_ANNOT_FREE_TEXT
+                || !isAppTextAnnotation(m_ctx, annot))
+                continue;
+
+            const fz_rect rect = pdf_annot_rect(m_ctx, annot);
+            if (point.x() < rect.x0 || point.x() > rect.x1
+                || point.y() < rect.y0 || point.y() > rect.y1)
+                continue;
+
+            bounds->setCoords(rect.x0, rect.y0, rect.x1, rect.y1);
+            *annotationId = pdf_to_num(m_ctx, pdf_annot_obj(m_ctx, annot));
+            const char *contents = pdf_annot_contents(m_ctx, annot);
+            *text = QString::fromUtf8(contents ? contents : "");
+            const char *appearanceFont = nullptr;
+            float appearanceSize = 12.0f;
+            float appearanceColor[4] = { 0, 0, 0, 1 };
+            int colorComponents = 0;
+            pdf_annot_default_appearance(m_ctx, annot, &appearanceFont,
+                                         &appearanceSize, &colorComponents,
+                                         appearanceColor);
+            *fontName = QString::fromLatin1(appearanceFont ? appearanceFont : "Helv");
+            *fontSize = appearanceSize;
+            if (colorComponents == 1) {
+                const int gray = qRound(appearanceColor[0] * 255.0f);
+                *color = QColor(gray, gray, gray);
+            } else if (colorComponents >= 3) {
+                *color = QColor(qRound(appearanceColor[0] * 255.0f),
+                                qRound(appearanceColor[1] * 255.0f),
+                                qRound(appearanceColor[2] * 255.0f));
+            } else {
+                *color = Qt::black;
+            }
+            found = true;
+            break;
+        }
     }
     fz_always(m_ctx)
     {
@@ -628,7 +718,157 @@ bool PdfEditor::addTextBox(int pageIndex, const QRectF &box, const QString &text
         m_error = QString::fromUtf8(fz_caught_message(m_ctx));
         return false;
     }
-    return true;
+    return found;
+}
+
+namespace {
+
+bool sameTextAnnotation(fz_context *ctx, pdf_annot *annot, int annotationId,
+                        const QString &text)
+{
+    if (pdf_annot_type(ctx, annot) != PDF_ANNOT_FREE_TEXT
+        || !isAppTextAnnotation(ctx, annot)
+        || pdf_to_num(ctx, pdf_annot_obj(ctx, annot)) != annotationId)
+        return false;
+    const char *contents = pdf_annot_contents(ctx, annot);
+    return QString::fromUtf8(contents ? contents : "") == text;
+}
+
+}
+
+bool PdfEditor::updateTextAnnotation(int pageIndex, int annotationId,
+                                     const QString &oldText, const QString &newText)
+{
+    m_error.clear();
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (newText.trimmed().isEmpty()) {
+        m_error = "Text cannot be empty.";
+        return false;
+    }
+
+    const QByteArray newTextUtf8 = newText.toUtf8();
+    pdf_page *page = nullptr;
+    bool found = false;
+    fz_var(page);
+    fz_var(found);
+
+    fz_try(m_ctx)
+    {
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+        for (pdf_annot *annot = pdf_first_annot(m_ctx, page); annot;
+             annot = pdf_next_annot(m_ctx, annot)) {
+            if (!sameTextAnnotation(m_ctx, annot, annotationId, oldText))
+                continue;
+            pdf_set_annot_contents(m_ctx, annot, newTextUtf8.constData());
+            pdf_update_annot(m_ctx, annot);
+            found = true;
+            break;
+        }
+    }
+    fz_always(m_ctx)
+    {
+        if (page)
+            fz_drop_page(m_ctx, &page->super);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    if (!found)
+        m_error = "The selected text annotation could not be found.";
+    return found;
+}
+
+bool PdfEditor::setTextAnnotationBounds(int pageIndex, int annotationId,
+                                        const QString &text, const QRectF &bounds)
+{
+    m_error.clear();
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (bounds.width() <= 0 || bounds.height() <= 0) {
+        m_error = "The text box dimensions must be positive.";
+        return false;
+    }
+
+    const fz_rect rect = fz_make_rect(float(bounds.left()), float(bounds.top()),
+                                      float(bounds.right()), float(bounds.bottom()));
+    pdf_page *page = nullptr;
+    bool found = false;
+    fz_var(page);
+    fz_var(found);
+
+    fz_try(m_ctx)
+    {
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+        for (pdf_annot *annot = pdf_first_annot(m_ctx, page); annot;
+             annot = pdf_next_annot(m_ctx, annot)) {
+            if (!sameTextAnnotation(m_ctx, annot, annotationId, text))
+                continue;
+            pdf_set_annot_rect(m_ctx, annot, rect);
+            pdf_update_annot(m_ctx, annot);
+            found = true;
+            break;
+        }
+    }
+    fz_always(m_ctx)
+    {
+        if (page)
+            fz_drop_page(m_ctx, &page->super);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    if (!found)
+        m_error = "The selected text annotation could not be found.";
+    return found;
+}
+
+bool PdfEditor::deleteTextAnnotation(int pageIndex, int annotationId, const QString &text)
+{
+    m_error.clear();
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+
+    pdf_page *page = nullptr;
+    bool found = false;
+    fz_var(page);
+    fz_var(found);
+
+    fz_try(m_ctx)
+    {
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+        for (pdf_annot *annot = pdf_first_annot(m_ctx, page); annot;
+             annot = pdf_next_annot(m_ctx, annot)) {
+            if (!sameTextAnnotation(m_ctx, annot, annotationId, text))
+                continue;
+            pdf_delete_annot(m_ctx, page, annot);
+            found = true;
+            break;
+        }
+    }
+    fz_always(m_ctx)
+    {
+        if (page)
+            fz_drop_page(m_ctx, &page->super);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+    if (!found)
+        m_error = "The selected text annotation could not be found.";
+    return found;
 }
 
 bool PdfEditor::addInkStroke(int pageIndex, const QVector<QPointF> &points,

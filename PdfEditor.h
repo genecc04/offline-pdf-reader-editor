@@ -1,4 +1,5 @@
 #pragma once
+#include <QColor>
 #include <QString>
 #include <QList>
 #include <QRectF>
@@ -39,6 +40,14 @@ public:
     bool addTextBox(int pageIndex, const QRectF &box, const QString &text,
                 const QString &fontName, double fontSize,
                 float red, float green, float blue);
+    bool textAnnotationAt(int pageIndex, const QPointF &point,
+                          int *annotationId, QRectF *bounds, QString *text,
+                          QString *fontName, double *fontSize, QColor *color);
+    bool updateTextAnnotation(int pageIndex, int annotationId,
+                              const QString &oldText, const QString &newText);
+    bool setTextAnnotationBounds(int pageIndex, int annotationId, const QString &text,
+                                 const QRectF &bounds);
+    bool deleteTextAnnotation(int pageIndex, int annotationId, const QString &text);
 
     bool open(const QString &path, const QString &password = QString());
     enum class Encryption { Keep, Remove, Aes256 };

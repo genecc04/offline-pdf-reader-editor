@@ -31,9 +31,7 @@ public:
     enum class ZoomMode { Custom, FitToWidth, FitInView };
 
     struct TextStyle {
-        QString family = QStringLiteral("Arial");
-        bool bold = false;
-        bool italic = false;
+        QString family = QStringLiteral("Helvetica");
         double sizePoints = 12.0;
         QColor color = QColor(0, 0, 0);
     };
@@ -88,6 +86,11 @@ public:
         const std::function<bool(int, const QPointF &, FormField *)> &handler);
     void setFormFieldValueHandler(
         const std::function<bool(int, int, const QString &)> &handler);
+    void setTextAnnotationHandler(
+        const std::function<bool(int, const QPointF &, int *, QRectF *, QString *,
+                                 TextStyle *)> &handler);
+    void editTextAnnotationInline(int page, int annotationId, const QString &text);
+    void deleteSelectedTextAnnotation();
     void setFormFields(int page, const QVector<FormField> &fields);
     void clearFormFieldOverlays();
     bool hasPendingChanges() const;
@@ -118,6 +121,13 @@ signals:
     void eraseRequested(int page, const QVector<QPointF> &path, double radius);
     void pendingStrokesChanged();
     void pendingChangesChanged();
+    void textAnnotationEditRequested(int page, int annotationId, const QString &text);
+    void textAnnotationEdited(int page, int annotationId,
+                              const QString &oldText, const QString &newText);
+    void textAnnotationDeleteRequested(int page, int annotationId, const QString &text);
+    void textAnnotationBoundsChanged(int page, int annotationId, const QString &text,
+                                     const QRectF &bounds);
+    void textAnnotationSelectionChanged(bool selected);
     void imagePlaced(int page, const QRectF &boxPoints, const QImage &image);
     void imagePlacementStateChanged(bool active, bool positioned);
     void imageCropModeChanged(bool active);
@@ -131,6 +141,7 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
@@ -165,6 +176,8 @@ private:
     void drawStroke(QPainter &painter, const Stroke &stroke, const QRect &pageRect);
 
     void startEditor(int page, const QRectF &boxPoints);
+    void startAnnotationEditor(int page, int annotationId, const QRectF &boxPoints,
+                               const QString &text, const TextStyle &style);
     void positionEditor();
     void applyEditorStyle();
     void finishEditor(bool commit);
@@ -186,6 +199,11 @@ private:
 
     void updateSelection();
     void extendSelection(const QPoint &viewportPos);
+    void selectTextAnnotation(int page, int annotationId, const QRectF &bounds,
+                              const QString &text, const TextStyle &style);
+    void clearSelectedTextAnnotation();
+    QRectF selectedTextAnnotationViewportBounds() const;
+    int textAnnotationResizeHandleAt(const QPoint &pos) const;
 
     QPdfDocument *m_document = nullptr;
     QPdfDocument *m_pageRenderDocument = nullptr;
@@ -213,6 +231,10 @@ private:
     int m_editorPage = -1;
     QRectF m_editorBox;
     TextStyle m_style;
+    TextStyle m_editorStyle;
+    bool m_editingTextAnnotation = false;
+    int m_editingTextAnnotationId = 0;
+    QString m_editingTextAnnotationOriginal;
 
     // draw tool
     bool m_drawTool = false;
@@ -254,6 +276,19 @@ private:
     QTimer *m_autoScroll = nullptr;
     std::function<bool(int, const QPointF &, FormField *)> m_formFieldHandler;
     std::function<bool(int, int, const QString &)> m_formFieldValueHandler;
+    std::function<bool(int, const QPointF &, int *, QRectF *, QString *,
+                       TextStyle *)>
+        m_textAnnotationHandler;
+    int m_selectedTextAnnotationId = 0;
+    int m_selectedTextAnnotationPage = -1;
+    QRectF m_selectedTextAnnotationBounds;
+    QString m_selectedTextAnnotationContents;
+    TextStyle m_selectedTextAnnotationStyle;
+    bool m_resizingTextAnnotation = false;
+    bool m_movingTextAnnotation = false;
+    int m_textAnnotationResizeCorner = -1;
+    QPointF m_textAnnotationMoveStart;
+    QRectF m_textAnnotationResizeOriginalBounds;
     QVector<FormFieldOverlay> m_formFieldOverlays;
     QWidget *m_formEditor = nullptr;
     QLineEdit *m_formLineEditor = nullptr;
