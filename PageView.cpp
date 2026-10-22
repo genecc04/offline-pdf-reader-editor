@@ -3,10 +3,13 @@
 #include <QAbstractItemModel>
 #include <QApplication>
 #include <QClipboard>
+#include <QComboBox>
 #include <QContextMenuEvent>
 #include <QFocusEvent>
+#include <QFont>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QLineF>
 #include <QMenu>
 #include <QMouseEvent>
@@ -18,6 +21,7 @@
 #include <QPdfSelection>
 #include <QPlainTextEdit>
 #include <QPolygonF>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QStringList>
 #include <QTimer>
@@ -41,6 +45,19 @@ PageView::PageView(QWidget *parent)
     horizontalScrollBar()->setSingleStep(30);
     verticalScrollBar()->setSingleStep(40);
     viewport()->setMouseTracking(true);
+
+    m_emptyStateOpenButton = new QPushButton("Open a PDF...", viewport());
+    m_emptyStateOpenButton->setObjectName(QStringLiteral("emptyStateOpenButton"));
+    m_emptyStateOpenButton->setCursor(Qt::PointingHandCursor);
+    m_emptyStateOpenButton->setStyleSheet(
+        QStringLiteral("QPushButton {"
+                       " color: #344050; background: #e9edf2;"
+                       " border: 1px solid #d4dae2; border-radius: 5px;"
+                       " padding: 9px 22px; font-weight: 600;"
+                       " } QPushButton:hover { background: #e1e6ec; }"
+                       " QPushButton:pressed { background: #d8dee6; }"));
+    connect(m_emptyStateOpenButton, &QPushButton::clicked,
+            this, &PageView::openRequested);
 
     m_autoScroll = new QTimer(this);
     m_autoScroll->setInterval(30);
@@ -96,6 +113,7 @@ void PageView::setPageRenderDocument(QPdfDocument *document,
 void PageView::onDocumentChanged()
 {
     finishEditor(false);
+    finishFormEditor(false);
     finishImage(false);
 
     m_selecting = false;
@@ -123,6 +141,20 @@ void PageView::onDocumentChanged()
             m_pageSizes.append(m_document->pagePointSize(i));
     }
     recalculateLayout(false);
+}
+
+void PageView::positionEmptyStateButton()
+{
+    if (!m_emptyStateOpenButton)
+        return;
+    const QSize buttonSize = m_emptyStateOpenButton->sizeHint();
+    m_emptyStateOpenButton->setGeometry(
+        (viewport()->width() - buttonSize.width()) / 2,
+        viewport()->height() / 2 + 48,
+        buttonSize.width(), buttonSize.height());
+    const bool loading = m_document
+                         && m_document->status() == QPdfDocument::Status::Loading;
+    m_emptyStateOpenButton->setVisible(m_pageRects.isEmpty() && !loading);
 }
 
 void PageView::setZoomMode(ZoomMode mode)
@@ -215,6 +247,8 @@ void PageView::recalculateLayout(bool keepPosition)
 
     applyEditorStyle();
     positionEditor();
+    positionFormEditor();
+    positionEmptyStateButton();
     viewport()->update();
     updateCurrentPage();
 }
@@ -341,6 +375,104 @@ void PageView::drawSearchResults(QPainter &painter, int page, const QRect &pageR
     }
 }
 
+void PageView::drawFormFieldOverlays(QPainter &painter, int page, const QRect &pageRect)
+{
+    for (const FormFieldOverlay &overlay : std::as_const(m_formFieldOverlays)) {
+        if (overlay.page != page)
+            continue;
+
+        const QRectF bounds(
+            pageRect.x() + overlay.field.bounds.x() * m_scale,
+            pageRect.y() + overlay.field.bounds.y() * m_scale,
+            overlay.field.bounds.width() * m_scale,
+            overlay.field.bounds.height() * m_scale);
+        painter.save();
+        painter.setClipRect(pageRect, Qt::IntersectClip);
+        painter.fillRect(bounds, Qt::white);
+        painter.setPen(QPen(QColor(130, 130, 130), 1));
+
+        QString text = overlay.field.value;
+        if (overlay.field.password)
+            text = QString(text.size(), QLatin1Char('*'));
+        if (overlay.field.type == FormField::Type::ComboBox
+            || overlay.field.type == FormField::Type::ListBox) {
+            const int valueIndex = overlay.field.optionValues.indexOf(text);
+            if (valueIndex >= 0 && valueIndex < overlay.field.options.size())
+                text = overlay.field.options.at(valueIndex);
+        }
+
+        if (overlay.field.type == FormField::Type::CheckBox) {
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(bounds.adjusted(0.5, 0.5, -0.5, -0.5));
+            if (overlay.field.checked) {
+                painter.setPen(QPen(Qt::black, qMax(1.0, bounds.width() * 0.09),
+                                    Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter.drawLine(bounds.left() + bounds.width() * 0.22,
+                                 bounds.center().y(),
+                                 bounds.left() + bounds.width() * 0.43,
+                                 bounds.bottom() - bounds.height() * 0.24);
+                painter.drawLine(bounds.left() + bounds.width() * 0.43,
+                                 bounds.bottom() - bounds.height() * 0.24,
+                                 bounds.right() - bounds.width() * 0.16,
+                                 bounds.top() + bounds.height() * 0.2);
+            }
+            painter.restore();
+            continue;
+        }
+        if (overlay.field.type == FormField::Type::RadioButton) {
+            painter.setBrush(Qt::NoBrush);
+            painter.drawEllipse(bounds.adjusted(0.5, 0.5, -0.5, -0.5));
+            if (overlay.field.checked) {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(Qt::black);
+                painter.drawEllipse(bounds.adjusted(bounds.width() * 0.27,
+                                                    bounds.height() * 0.27,
+                                                    -bounds.width() * 0.27,
+                                                    -bounds.height() * 0.27));
+            }
+            painter.restore();
+            continue;
+        }
+
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(bounds.adjusted(0.5, 0.5, -0.5, -0.5));
+        const qreal fontSize = qBound(6.0, bounds.height() * 0.58, 18.0);
+        QFont font = painter.font();
+        font.setPixelSize(qMax(1, qRound(fontSize)));
+        painter.setFont(font);
+        painter.setPen(Qt::black);
+        const qreal arrowWidth = qMin(18.0, qMax(12.0, bounds.height() * 0.9));
+        const qreal rightPadding = overlay.field.type == FormField::Type::ComboBox
+                                       ? arrowWidth + 3 : 3;
+        const QRectF textBounds = bounds.adjusted(3, 1, -rightPadding, -1);
+        if (overlay.field.multiline) {
+            painter.drawText(textBounds, Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, text);
+        } else {
+            painter.drawText(textBounds, Qt::AlignLeft | Qt::AlignVCenter, text);
+        }
+        if (overlay.field.type == FormField::Type::ComboBox) {
+            const QRectF buttonBounds(bounds.right() - arrowWidth, bounds.top() + 1,
+                                      arrowWidth - 1, qMax(0.0, bounds.height() - 2));
+            painter.fillRect(buttonBounds, QColor(240, 240, 240));
+            painter.setPen(QColor(150, 150, 150));
+            painter.drawLine(QPointF(buttonBounds.left(), bounds.top() + 1),
+                             QPointF(buttonBounds.left(), bounds.bottom() - 1));
+
+            const QPointF center = buttonBounds.center();
+            const qreal halfArrowWidth = qMin(4.0, buttonBounds.width() * 0.28);
+            const qreal halfArrowHeight = qMin(2.5, buttonBounds.height() * 0.16);
+            QPolygonF arrow;
+            arrow << QPointF(center.x() - halfArrowWidth, center.y() - halfArrowHeight)
+                  << QPointF(center.x() + halfArrowWidth, center.y() - halfArrowHeight)
+                  << QPointF(center.x(), center.y() + halfArrowHeight);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(55, 55, 55));
+            painter.drawPolygon(arrow);
+        }
+        painter.restore();
+    }
+}
+
 // painting
 
 QPixmap PageView::pageImage(int page, const QSize &size, qreal dpr)
@@ -391,8 +523,35 @@ void PageView::drawStroke(QPainter &painter, const Stroke &stroke, const QRect &
 void PageView::paintEvent(QPaintEvent *event)
 {
     QPainter painter(viewport());
+    const bool loading = m_document
+                         && m_document->status() == QPdfDocument::Status::Loading;
+    if (m_pageRects.isEmpty()) {
+        painter.fillRect(event->rect(), QColor(245, 247, 250));
+        if (!loading) {
+            painter.setPen(QColor(42, 52, 64));
+            QFont titleFont = painter.font();
+            titleFont.setPixelSize(22);
+            titleFont.setWeight(QFont::DemiBold);
+            painter.setFont(titleFont);
+            const QRect titleRect(0, viewport()->height() / 2 - 66,
+                                  viewport()->width(), 34);
+            painter.drawText(titleRect, Qt::AlignHCenter | Qt::AlignVCenter,
+                             QStringLiteral("No PDF open"));
+
+            QFont hintFont = painter.font();
+            hintFont.setPixelSize(14);
+            hintFont.setWeight(QFont::Normal);
+            painter.setFont(hintFont);
+            painter.setPen(QColor(100, 110, 122));
+            const QRect hintRect(16, viewport()->height() / 2 - 27,
+                                 viewport()->width() - 32, 28);
+            painter.drawText(hintRect, Qt::AlignHCenter | Qt::AlignVCenter,
+                             QStringLiteral("Drag a PDF here or open one to get started"));
+        }
+        return;
+    }
     painter.fillRect(event->rect(), QColor(70, 70, 70));
-    if (m_pageRects.isEmpty() || !m_document)
+    if (!m_document)
         return;
 
     const QPoint offset(horizontalScrollBar()->value(), verticalScrollBar()->value());
@@ -416,6 +575,7 @@ void PageView::paintEvent(QPaintEvent *event)
         painter.fillRect(target, Qt::white);
         painter.drawPixmap(target.topLeft(), pageImage(page, target.size(), dpr));
         drawSearchResults(painter, page, target, current);
+        drawFormFieldOverlays(painter, page, target);
 
         painter.save();
         painter.setClipRect(target, Qt::IntersectClip);
@@ -478,6 +638,7 @@ void PageView::scrollContentsBy(int dx, int dy)
 {
     QAbstractScrollArea::scrollContentsBy(dx, dy);
     positionEditor();
+    positionFormEditor();
     if (!m_jumping)
         updateCurrentPage();
 }
@@ -523,6 +684,7 @@ void PageView::keyPressEvent(QKeyEvent *event)
 void PageView::commitPendingEdits()
 {
     finishEditor(true);
+    finishFormEditor(true);
     commitStrokes();
     finishImage(true);
 }
@@ -678,6 +840,7 @@ bool PageView::undoLastStroke()
     m_strokes.removeLast();
     viewport()->update();
     emit pendingStrokesChanged();
+    emit pendingChangesChanged();
     return true;
 }
 
@@ -689,6 +852,7 @@ void PageView::commitStrokes()
     m_strokes.clear();
     viewport()->update();
     emit pendingStrokesChanged();
+    emit pendingChangesChanged();
     emit strokesPlaced(strokes);
 }
 
@@ -725,6 +889,7 @@ void PageView::finishImage(bool commit)
 
     if (commit && wasActive)
         emit imagePlaced(page, box, image);
+    emit pendingChangesChanged();
 }
 
 QRectF PageView::imagePixelRect() const
@@ -806,11 +971,68 @@ void PageView::setTextStyle(const TextStyle &style)
     applyEditorStyle();
 }
 
+void PageView::setFormFieldHandler(
+    const std::function<bool(int, const QPointF &, FormField *)> &handler)
+{
+    m_formFieldHandler = handler;
+}
+
+void PageView::setFormFieldValueHandler(
+    const std::function<bool(int, int, const QString &)> &handler)
+{
+    m_formFieldValueHandler = handler;
+}
+
+void PageView::setFormFields(int page, const QVector<FormField> &fields)
+{
+    for (int i = m_formFieldOverlays.size() - 1; i >= 0; --i) {
+        if (m_formFieldOverlays.at(i).page == page)
+            m_formFieldOverlays.removeAt(i);
+    }
+    for (const FormField &field : fields) {
+        FormFieldOverlay overlay;
+        overlay.page = page;
+        overlay.field = field;
+        switch (field.type) {
+        case FormField::Type::Text:
+        case FormField::Type::CheckBox:
+        case FormField::Type::RadioButton:
+        case FormField::Type::ComboBox:
+        case FormField::Type::ListBox:
+            m_formFieldOverlays.append(overlay);
+            break;
+        case FormField::Type::None:
+            break;
+        }
+    }
+    viewport()->update();
+}
+
+void PageView::clearFormFieldOverlays()
+{
+    if (m_formFieldOverlays.isEmpty())
+        return;
+    m_formFieldOverlays.clear();
+    viewport()->update();
+}
+
+bool PageView::hasPendingChanges() const
+{
+    if (!m_strokes.isEmpty() || m_drawing || m_erasing || m_imageActive)
+        return true;
+    if (m_editor && !m_editor->toPlainText().trimmed().isEmpty())
+        return true;
+    return m_formEditor && formEditorValue() != m_formEditorInitialValue;
+}
+
 // mouse
 
 void PageView::mousePressEvent(QMouseEvent *event)
 {
     const QPoint pos = event->position().toPoint();
+
+    if (m_formEditor)
+        finishFormEditor(true);
 
     if (m_editor) {
         finishEditor(true);
@@ -866,6 +1088,7 @@ void PageView::mousePressEvent(QMouseEvent *event)
         m_imageRect = rect;
         m_imageAwaiting = false;
         m_imageActive = true;
+        emit pendingChangesChanged();
         viewport()->update();
         return;
     }
@@ -895,6 +1118,7 @@ void PageView::mousePressEvent(QMouseEvent *event)
             m_activeStroke.style = m_drawStyle;
             m_activeStroke.points << pagePointFor(page, pos);
             m_drawing = true;
+            emit pendingChangesChanged();
         }
         return;
     }
@@ -902,6 +1126,18 @@ void PageView::mousePressEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton && !m_textTool && !m_drawTool) {
         setFocus();
         const int page = pageAtViewportPoint(pos);
+        if (page >= 0 && m_formFieldHandler) {
+            FormField field;
+            if (m_formFieldHandler(page, pagePointFor(page, pos), &field)) {
+                clearSelection();
+                if (!field.readOnly
+                    && (field.type == FormField::Type::Text
+                        || field.type == FormField::Type::ComboBox
+                        || field.type == FormField::Type::ListBox))
+                    startFormEditor(page, field);
+                return;
+            }
+        }
         const bool extending = page >= 0 && (event->modifiers() & Qt::ShiftModifier)
                                && !m_selection.isEmpty() && m_selStartPage >= 0;
         if (!extending)
@@ -1018,6 +1254,7 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
         viewport()->update();
         if (!path.isEmpty())
             emit eraseRequested(page, path, radius);
+        emit pendingChangesChanged();
         return;
     }
 
@@ -1043,6 +1280,7 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
         m_activeStroke = Stroke();
         viewport()->update();
         emit pendingStrokesChanged();
+        emit pendingChangesChanged();
         return;
     }
 
@@ -1083,10 +1321,13 @@ void PageView::startEditor(int page, const QRectF &boxPoints)
     m_editor = new QPlainTextEdit(viewport());
     m_editor->setFrameShape(QFrame::NoFrame);
     m_editor->installEventFilter(this);
+    connect(m_editor, &QPlainTextEdit::textChanged,
+            this, &PageView::pendingChangesChanged);
     applyEditorStyle();
     positionEditor();
     m_editor->show();
     m_editor->setFocus();
+    emit pendingChangesChanged();
 }
 
 void PageView::applyEditorStyle()
@@ -1141,10 +1382,188 @@ void PageView::finishEditor(bool commit)
 
     if (commit && !text.isEmpty())
         emit textPlaced(page, box, text, style);
+    emit pendingChangesChanged();
+}
+
+void PageView::startFormEditor(int page, const FormField &field)
+{
+    finishFormEditor(false);
+    m_activeFormField = field;
+    m_formEditorPage = page;
+    m_formEditorInitialValue = field.value;
+
+    if (field.type == FormField::Type::Text && field.multiline) {
+        m_formTextEditor = new QPlainTextEdit(viewport());
+        m_formTextEditor->setPlainText(field.value);
+        m_formTextEditor->installEventFilter(this);
+        connect(m_formTextEditor, &QPlainTextEdit::textChanged,
+                this, &PageView::pendingChangesChanged);
+        m_formEditor = m_formTextEditor;
+    } else if (field.type == FormField::Type::Text) {
+        m_formLineEditor = new QLineEdit(viewport());
+        m_formLineEditor->setText(field.value);
+        m_formLineEditor->setEchoMode(field.password ? QLineEdit::Password
+                                                     : QLineEdit::Normal);
+        m_formLineEditor->installEventFilter(this);
+        connect(m_formLineEditor, &QLineEdit::textChanged,
+                this, &PageView::pendingChangesChanged);
+        m_formEditor = m_formLineEditor;
+    } else {
+        m_formChoiceEditor = new QComboBox(viewport());
+        m_formChoiceEditor->setEditable(field.editableChoice);
+        for (int i = 0; i < field.options.size(); ++i) {
+            const QString optionValue = i < field.optionValues.size()
+                ? field.optionValues.at(i) : field.options.at(i);
+            m_formChoiceEditor->addItem(field.options.at(i), optionValue);
+        }
+        int current = field.optionValues.indexOf(field.value);
+        if (current < 0)
+            current = field.options.indexOf(field.value);
+        if (current < 0 && !field.editableChoice) {
+            m_formChoiceEditor->insertItem(0, field.value, field.value);
+            current = 0;
+        }
+        if (current >= 0) {
+            m_formChoiceEditor->setCurrentIndex(current);
+        } else if (field.editableChoice) {
+            m_formChoiceEditor->setEditText(field.value);
+        }
+        m_formChoiceEditor->installEventFilter(this);
+        connect(m_formChoiceEditor, &QComboBox::currentTextChanged,
+                this, &PageView::pendingChangesChanged);
+        if (m_formChoiceEditor->lineEdit())
+            m_formChoiceEditor->lineEdit()->installEventFilter(this);
+        m_formEditor = m_formChoiceEditor;
+    }
+
+    m_formEditor->setStyleSheet(
+        QStringLiteral("QLineEdit, QPlainTextEdit, QComboBox {"
+                       " color: #111; background: rgba(255,255,255,245);"
+                       " border: 2px solid #0066cc; padding: 1px; }"));
+    positionFormEditor();
+    m_formEditor->show();
+    m_formEditor->setFocus();
+    if (m_formLineEditor)
+        m_formLineEditor->selectAll();
+    emit pendingChangesChanged();
+}
+
+void PageView::positionFormEditor()
+{
+    if (!m_formEditor || m_formEditorPage < 0 || m_formEditorPage >= m_pageRects.size())
+        return;
+    const QRect page = pageRectInViewport(m_formEditorPage);
+    const QRect bounds(
+        page.x() + qRound(m_activeFormField.bounds.x() * m_scale),
+        page.y() + qRound(m_activeFormField.bounds.y() * m_scale),
+        qMax(1, qRound(m_activeFormField.bounds.width() * m_scale)),
+        qMax(1, qRound(m_activeFormField.bounds.height() * m_scale)));
+    m_formEditor->setGeometry(bounds);
+}
+
+void PageView::finishFormEditor(bool commit)
+{
+    if (!m_formEditor)
+        return;
+
+    const int page = m_formEditorPage;
+    const FormField field = m_activeFormField;
+    const QString initialValue = m_formEditorInitialValue;
+    const QString value = formEditorValue();
+
+    QWidget *editor = m_formEditor;
+    m_formEditor = nullptr;
+    m_formLineEditor = nullptr;
+    m_formTextEditor = nullptr;
+    m_formChoiceEditor = nullptr;
+    m_formEditorPage = -1;
+    m_activeFormField = FormField();
+    editor->hide();
+    editor->deleteLater();
+    setFocus();
+    m_formEditorInitialValue.clear();
+
+    if (commit && value != initialValue && m_formFieldValueHandler) {
+        if (!m_formFieldValueHandler(page, field.widgetIndex, value)) {
+            FormField retryField = field;
+            retryField.value = value;
+            if (page >= 0 && page < m_pageRects.size())
+                startFormEditor(page, retryField);
+            return;
+        }
+
+        FormFieldOverlay overlay;
+        overlay.page = page;
+        overlay.field = field;
+        overlay.field.value = value;
+        int existing = -1;
+        for (int i = 0; i < m_formFieldOverlays.size(); ++i) {
+            if (m_formFieldOverlays.at(i).page == page
+                && m_formFieldOverlays.at(i).field.widgetIndex == field.widgetIndex) {
+                existing = i;
+                break;
+            }
+        }
+        if (existing >= 0)
+            m_formFieldOverlays[existing] = overlay;
+        else
+            m_formFieldOverlays.append(overlay);
+        viewport()->update();
+    }
+    emit pendingChangesChanged();
+}
+
+QString PageView::formEditorValue() const
+{
+    if (m_formLineEditor)
+        return m_formLineEditor->text();
+    if (m_formTextEditor)
+        return m_formTextEditor->toPlainText();
+    if (!m_formChoiceEditor)
+        return QString();
+
+    const int matchingOption = m_formChoiceEditor->findText(
+        m_formChoiceEditor->currentText());
+    if (m_formChoiceEditor->isEditable() && matchingOption < 0)
+        return m_formChoiceEditor->currentText();
+    return m_formChoiceEditor->itemData(
+        matchingOption >= 0 ? matchingOption
+                            : m_formChoiceEditor->currentIndex()).toString();
 }
 
 bool PageView::eventFilter(QObject *watched, QEvent *event)
 {
+    if (m_formEditor
+        && (watched == m_formEditor
+            || (m_formChoiceEditor && watched == m_formChoiceEditor->lineEdit()))) {
+        if (event->type() == QEvent::KeyPress) {
+            auto *key = static_cast<QKeyEvent *>(event);
+            if (key->key() == Qt::Key_Escape) {
+                finishFormEditor(false);
+                return true;
+            }
+            const bool enter = key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter;
+            const bool multiline = m_formTextEditor != nullptr;
+            if (enter && (!multiline || (key->modifiers() & Qt::ControlModifier))) {
+                finishFormEditor(true);
+                return true;
+            }
+        } else if (event->type() == QEvent::FocusOut) {
+            const Qt::FocusReason reason = static_cast<QFocusEvent *>(event)->reason();
+            if (reason != Qt::ActiveWindowFocusReason && reason != Qt::PopupFocusReason) {
+                QTimer::singleShot(0, this, [this]() {
+                    if (!m_formEditor)
+                        return;
+                    QWidget *focus = QApplication::focusWidget();
+                    if ((focus && (focus == m_formEditor || m_formEditor->isAncestorOf(focus)))
+                        || QApplication::activePopupWidget())
+                        return;
+                    finishFormEditor(true);
+                });
+            }
+        }
+    }
+
     if (m_editor && watched == m_editor) {
         if (event->type() == QEvent::KeyPress) {
             auto *key = static_cast<QKeyEvent *>(event);

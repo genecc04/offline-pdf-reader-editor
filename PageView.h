@@ -13,11 +13,15 @@
 #include <QSizeF>
 #include <QString>
 #include <QVector>
+#include <functional>
 
 class QPdfDocument;
 class QPdfLink;
 class QPdfSearchModel;
+class QComboBox;
+class QLineEdit;
 class QPlainTextEdit;
+class QPushButton;
 class QTimer;
 
 class PageView : public QAbstractScrollArea
@@ -46,6 +50,22 @@ public:
         DrawStyle style;
     };
 
+    struct FormField {
+        enum class Type { None, Text, CheckBox, RadioButton, ComboBox, ListBox };
+
+        Type type = Type::None;
+        QRectF bounds;
+        QString value;
+        QStringList options;
+        QStringList optionValues;
+        bool checked = false;
+        bool readOnly = false;
+        bool multiline = false;
+        bool password = false;
+        bool editableChoice = false;
+        int widgetIndex = -1;
+    };
+
     explicit PageView(QWidget *parent = nullptr);
 
     void setDocument(QPdfDocument *document);
@@ -64,6 +84,13 @@ public:
 
     void setTextToolActive(bool active);
     void setTextStyle(const TextStyle &style);
+    void setFormFieldHandler(
+        const std::function<bool(int, const QPointF &, FormField *)> &handler);
+    void setFormFieldValueHandler(
+        const std::function<bool(int, int, const QString &)> &handler);
+    void setFormFields(int page, const QVector<FormField> &fields);
+    void clearFormFieldOverlays();
+    bool hasPendingChanges() const;
 
     void setDrawToolActive(bool active);
     void setDrawStyle(const DrawStyle &style);
@@ -88,8 +115,10 @@ signals:
     void strokesPlaced(const QVector<PageView::Stroke> &strokes);
     void eraseRequested(int page, const QVector<QPointF> &path, double radius);
     void pendingStrokesChanged();
+    void pendingChangesChanged();
     void imagePlaced(int page, const QRectF &boxPoints, const QImage &image);
     void textSelected();
+    void openRequested();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -112,8 +141,14 @@ private:
         QString text;
     };
 
+    struct FormFieldOverlay {
+        int page = -1;
+        FormField field;
+    };
+
     void onDocumentChanged();
     void recalculateLayout(bool keepPosition);
+    void positionEmptyStateButton();
     void updateCurrentPage();
     int pageAtViewportPoint(const QPoint &point) const;
     int nearestPage(const QPoint &viewportPos) const;
@@ -122,12 +157,17 @@ private:
     QPixmap pageImage(int page, const QSize &size, qreal dpr);
     void drawSearchResults(QPainter &painter, int page, const QRect &pageRect,
                            const QPdfLink &current);
+    void drawFormFieldOverlays(QPainter &painter, int page, const QRect &pageRect);
     void drawStroke(QPainter &painter, const Stroke &stroke, const QRect &pageRect);
 
     void startEditor(int page, const QRectF &boxPoints);
     void positionEditor();
     void applyEditorStyle();
     void finishEditor(bool commit);
+    void startFormEditor(int page, const FormField &field);
+    void positionFormEditor();
+    void finishFormEditor(bool commit);
+    QString formEditorValue() const;
     void commitStrokes();
 
     void finishImage(bool commit);
@@ -142,6 +182,7 @@ private:
     QPdfDocument *m_document = nullptr;
     QPdfDocument *m_pageRenderDocument = nullptr;
     QPdfSearchModel *m_search = nullptr;
+    QPushButton *m_emptyStateOpenButton = nullptr;
     int m_searchIndex = -1;
 
     ZoomMode m_zoomMode = ZoomMode::FitToWidth;
@@ -199,4 +240,14 @@ private:
     QPointF m_selEndPoint;
     QVector<SelectionPart> m_selection;
     QTimer *m_autoScroll = nullptr;
+    std::function<bool(int, const QPointF &, FormField *)> m_formFieldHandler;
+    std::function<bool(int, int, const QString &)> m_formFieldValueHandler;
+    QVector<FormFieldOverlay> m_formFieldOverlays;
+    QWidget *m_formEditor = nullptr;
+    QLineEdit *m_formLineEditor = nullptr;
+    QPlainTextEdit *m_formTextEditor = nullptr;
+    QComboBox *m_formChoiceEditor = nullptr;
+    FormField m_activeFormField;
+    int m_formEditorPage = -1;
+    QString m_formEditorInitialValue;
 };

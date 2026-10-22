@@ -54,6 +54,7 @@ private:
     void goToPage(int page);
     bool showFile(const QString &path, int page, bool reportErrors = true);
     void clearPageRenderDocument();
+    void restorePendingPage();
     void addRecentFile(const QString &path);
     void setDocumentPassword();
     void removeDocumentPassword();
@@ -81,6 +82,9 @@ private:
     void eraseInk(int page, const QVector<QPointF> &path, double radius);
     void addImage();
     void placeImage(int page, const QRectF &box, const QImage &image);
+    bool fillFormField(int page, const QPointF &point, PageView::FormField *field);
+    bool commitFormField(int page, int widgetIndex, const QString &value);
+    bool refreshFormFieldOverlays();
     void undo();
     void redo();
     void stepHistory(const QString &path);
@@ -133,5 +137,6 @@ private:
     QString m_currentPath;
     QString m_displayName;
     QString m_password;
+    int m_pendingPage = -1;
     int m_editCount = 0;
 };

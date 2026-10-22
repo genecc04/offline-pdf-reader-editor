@@ -837,3 +837,307 @@ bool PdfEditor::addImageStamp(int pageIndex, const QRectF &box, const QByteArray
     }
     return true;
 }
+
+bool PdfEditor::formFieldsOnPage(int pageIndex, QVector<FormField> *fields)
+{
+    m_error.clear();
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (!fields) {
+        m_error = "No form field list was provided.";
+        return false;
+    }
+    fields->clear();
+
+    pdf_page *page = nullptr;
+    char *fieldName = nullptr;
+    int succeeded = 1;
+    fz_var(page);
+    fz_var(fieldName);
+    fz_var(succeeded);
+
+    fz_try(m_ctx)
+    {
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+        int widgetIndex = 0;
+        for (pdf_annot *widget = pdf_first_widget(m_ctx, page); widget;
+             widget = pdf_next_widget(m_ctx, widget), ++widgetIndex) {
+            FormField field;
+            const enum pdf_widget_type widgetType = pdf_widget_type(m_ctx, widget);
+            switch (widgetType) {
+            case PDF_WIDGET_TYPE_TEXT:        field.type = FormFieldType::Text; break;
+            case PDF_WIDGET_TYPE_CHECKBOX:    field.type = FormFieldType::CheckBox; break;
+            case PDF_WIDGET_TYPE_RADIOBUTTON: field.type = FormFieldType::RadioButton; break;
+            case PDF_WIDGET_TYPE_COMBOBOX:    field.type = FormFieldType::ComboBox; break;
+            case PDF_WIDGET_TYPE_LISTBOX:     field.type = FormFieldType::ListBox; break;
+            default: continue;
+            }
+
+            const fz_rect bounds = pdf_bound_widget(m_ctx, widget);
+            field.bounds = QRectF(QPointF(bounds.x0, bounds.y0),
+                                  QPointF(bounds.x1, bounds.y1)).normalized();
+            field.widgetIndex = widgetIndex;
+            pdf_obj *fieldObject = pdf_annot_obj(m_ctx, widget);
+            fieldName = pdf_load_field_name(m_ctx, fieldObject);
+            field.name = fieldName ? QString::fromUtf8(fieldName) : QString();
+            if (fieldName) {
+                fz_free(m_ctx, fieldName);
+                fieldName = nullptr;
+            }
+            const char *label = pdf_field_label(m_ctx, fieldObject);
+            const char *value = pdf_field_value(m_ctx, fieldObject);
+            field.label = label ? QString::fromUtf8(label) : QString();
+            field.value = value ? QString::fromUtf8(value) : QString();
+            const int flags = pdf_field_flags(m_ctx, fieldObject);
+            field.readOnly = pdf_widget_is_readonly(m_ctx, widget) != 0;
+            field.multiline = (flags & PDF_TX_FIELD_IS_MULTILINE) != 0;
+            field.password = (flags & PDF_TX_FIELD_IS_PASSWORD) != 0;
+            field.editableChoice = field.type == FormFieldType::ComboBox
+                                   && (flags & PDF_CH_FIELD_IS_EDIT) != 0;
+
+            if (field.type == FormFieldType::CheckBox
+                || field.type == FormFieldType::RadioButton) {
+                pdf_obj *onState = pdf_button_field_on_state(m_ctx, fieldObject);
+                const char *onValue = pdf_to_name(m_ctx, onState);
+                field.checked = value && onValue && std::strcmp(value, onValue) == 0;
+            } else if (field.type == FormFieldType::ComboBox
+                       || field.type == FormFieldType::ListBox) {
+                const int optionCount = pdf_choice_field_option_count(m_ctx, fieldObject);
+                for (int i = 0; i < optionCount; ++i) {
+                    const char *labelValue = pdf_choice_field_option(m_ctx, fieldObject, 0, i);
+                    const char *exportValue = pdf_choice_field_option(m_ctx, fieldObject, 1, i);
+                    field.options.append(labelValue ? QString::fromUtf8(labelValue) : QString());
+                    field.optionValues.append(
+                        exportValue ? QString::fromUtf8(exportValue) : QString());
+                }
+            }
+            fields->append(field);
+        }
+        pdf_drop_page(m_ctx, page);
+        page = nullptr;
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        succeeded = 0;
+    }
+
+    if (fieldName)
+        fz_free(m_ctx, fieldName);
+    if (page)
+        pdf_drop_page(m_ctx, page);
+    return succeeded != 0;
+}
+
+bool PdfEditor::formFieldAt(int pageIndex, const QPointF &point, FormField *field)
+{
+    m_error.clear();
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (!field) {
+        m_error = "No form field result was provided.";
+        return false;
+    }
+
+    *field = FormField();
+
+    pdf_page *page = nullptr;
+    pdf_annot *matchedWidget = nullptr;
+    pdf_obj *fieldObject = nullptr;
+    char *fieldName = nullptr;
+    const char *fieldLabel = nullptr;
+    const char *fieldValue = nullptr;
+    const char **labels = nullptr;
+    const char **values = nullptr;
+    fz_rect bounds = { 0, 0, 0, 0 };
+    FormFieldType fieldType = FormFieldType::None;
+    int widgetFlags = 0;
+    int readOnly = 0;
+    int optionCount = 0;
+    int succeeded = 1;
+    fz_var(page);
+    fz_var(matchedWidget);
+    fz_var(fieldObject);
+    fz_var(fieldName);
+    fz_var(fieldLabel);
+    fz_var(fieldValue);
+    fz_var(labels);
+    fz_var(values);
+    fz_var(bounds);
+    fz_var(fieldType);
+    fz_var(widgetFlags);
+    fz_var(readOnly);
+    fz_var(optionCount);
+    fz_var(succeeded);
+
+    fz_try(m_ctx)
+    {
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+        int widgetIndex = 0;
+        for (pdf_annot *widget = pdf_first_widget(m_ctx, page); widget;
+             widget = pdf_next_widget(m_ctx, widget), ++widgetIndex) {
+            const enum pdf_widget_type type = pdf_widget_type(m_ctx, widget);
+            fieldType = FormFieldType::None;
+            switch (type) {
+            case PDF_WIDGET_TYPE_TEXT:       fieldType = FormFieldType::Text; break;
+            case PDF_WIDGET_TYPE_CHECKBOX:   fieldType = FormFieldType::CheckBox; break;
+            case PDF_WIDGET_TYPE_RADIOBUTTON: fieldType = FormFieldType::RadioButton; break;
+            case PDF_WIDGET_TYPE_COMBOBOX:   fieldType = FormFieldType::ComboBox; break;
+            case PDF_WIDGET_TYPE_LISTBOX:    fieldType = FormFieldType::ListBox; break;
+            default: break;
+            }
+            if (fieldType == FormFieldType::None)
+                continue;
+
+            bounds = pdf_bound_widget(m_ctx, widget);
+            if (point.x() < qMin(bounds.x0, bounds.x1)
+                || point.x() > qMax(bounds.x0, bounds.x1)
+                || point.y() < qMin(bounds.y0, bounds.y1)
+                || point.y() > qMax(bounds.y0, bounds.y1))
+                continue;
+
+            matchedWidget = widget;
+            fieldObject = pdf_annot_obj(m_ctx, widget);
+            fieldName = pdf_load_field_name(m_ctx, fieldObject);
+            fieldLabel = pdf_field_label(m_ctx, fieldObject);
+            fieldValue = pdf_field_value(m_ctx, fieldObject);
+            widgetFlags = pdf_field_flags(m_ctx, fieldObject);
+            readOnly = pdf_widget_is_readonly(m_ctx, widget);
+
+            if (fieldType == FormFieldType::ComboBox
+                || fieldType == FormFieldType::ListBox) {
+                optionCount = pdf_choice_widget_options(m_ctx, widget, 0, nullptr);
+                if (optionCount > 0) {
+                    labels = fz_malloc_array(m_ctx, optionCount, const char *);
+                    values = fz_malloc_array(m_ctx, optionCount, const char *);
+                    pdf_choice_widget_options(m_ctx, widget, 0, labels);
+                    pdf_choice_widget_options(m_ctx, widget, 1, values);
+                }
+            }
+
+            field->widgetIndex = widgetIndex;
+            break;
+        }
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        succeeded = 0;
+    }
+
+    if (succeeded && matchedWidget) {
+        field->type = fieldType;
+        field->bounds = QRectF(QPointF(bounds.x0, bounds.y0),
+                               QPointF(bounds.x1, bounds.y1)).normalized();
+        field->name = fieldName ? QString::fromUtf8(fieldName) : QString();
+        field->label = fieldLabel ? QString::fromUtf8(fieldLabel) : QString();
+        field->value = fieldValue ? QString::fromUtf8(fieldValue) : QString();
+        if (fieldType == FormFieldType::CheckBox
+            || fieldType == FormFieldType::RadioButton) {
+            pdf_obj *onState = pdf_button_field_on_state(m_ctx, fieldObject);
+            const char *onValue = pdf_to_name(m_ctx, onState);
+            field->checked = fieldValue && onValue
+                             && std::strcmp(fieldValue, onValue) == 0;
+        }
+        field->readOnly = readOnly != 0;
+        field->multiline = (widgetFlags & PDF_TX_FIELD_IS_MULTILINE) != 0;
+        field->password = (widgetFlags & PDF_TX_FIELD_IS_PASSWORD) != 0;
+        field->editableChoice = fieldType == FormFieldType::ComboBox
+                                && (widgetFlags & PDF_CH_FIELD_IS_EDIT) != 0;
+        for (int i = 0; i < optionCount; ++i) {
+            field->options.append(labels[i] ? QString::fromUtf8(labels[i]) : QString());
+            field->optionValues.append(values[i] ? QString::fromUtf8(values[i]) : QString());
+        }
+    }
+
+    if (values)
+        fz_free(m_ctx, values);
+    if (labels)
+        fz_free(m_ctx, labels);
+    if (fieldName)
+        fz_free(m_ctx, fieldName);
+    if (page)
+        pdf_drop_page(m_ctx, page);
+
+    return succeeded != 0;
+}
+
+bool PdfEditor::setFormFieldValue(int pageIndex, int widgetIndex, const QString &value)
+{
+    m_error.clear();
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (widgetIndex < 0) {
+        m_error = "That form field could not be found.";
+        return false;
+    }
+
+    const QByteArray valueUtf8 = value.toUtf8();
+    pdf_page *page = nullptr;
+    int found = 0;
+    int accepted = 0;
+    fz_var(page);
+    fz_var(found);
+    fz_var(accepted);
+
+    fz_try(m_ctx)
+    {
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+        int index = 0;
+        for (pdf_annot *widget = pdf_first_widget(m_ctx, page); widget;
+             widget = pdf_next_widget(m_ctx, widget), ++index) {
+            if (index != widgetIndex)
+                continue;
+
+            found = 1;
+            if (pdf_widget_is_readonly(m_ctx, widget))
+                break;
+
+            switch (pdf_widget_type(m_ctx, widget)) {
+            case PDF_WIDGET_TYPE_TEXT:
+                accepted = pdf_set_text_field_value(
+                    m_ctx, widget, valueUtf8.constData());
+                break;
+            case PDF_WIDGET_TYPE_COMBOBOX:
+            case PDF_WIDGET_TYPE_LISTBOX:
+                accepted = pdf_set_choice_field_value(
+                    m_ctx, widget, valueUtf8.constData());
+                break;
+            case PDF_WIDGET_TYPE_CHECKBOX:
+            case PDF_WIDGET_TYPE_RADIOBUTTON:
+                accepted = pdf_toggle_widget(m_ctx, widget);
+                break;
+            default:
+                break;
+            }
+            break;
+        }
+
+        if (accepted)
+            pdf_update_page(m_ctx, page);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+    }
+
+    if (page)
+        pdf_drop_page(m_ctx, page);
+    if (!m_error.isEmpty())
+        return false;
+    if (!found) {
+        m_error = "That form field could not be found.";
+        return false;
+    }
+    if (!accepted) {
+        m_error = "The PDF rejected that value or the field is read-only.";
+        return false;
+    }
+    return true;
+}

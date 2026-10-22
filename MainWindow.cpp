@@ -172,8 +172,24 @@ void MainWindow::setupViewer()
     });
     connect(m_view, &PageView::strokesPlaced, this, &MainWindow::placeStrokes);
     connect(m_view, &PageView::eraseRequested, this, &MainWindow::eraseInk);
-    connect(m_view, &PageView::pendingStrokesChanged, this, &MainWindow::updateActions);
+    connect(m_view, &PageView::pendingStrokesChanged, this, [this]() {
+        updateActions();
+        updateTitle();
+    });
+    connect(m_view, &PageView::pendingChangesChanged, this, [this]() {
+        updateActions();
+        updateTitle();
+    });
     connect(m_view, &PageView::imagePlaced, this, &MainWindow::placeImage);
+    m_view->setFormFieldHandler(
+        [this](int page, const QPointF &point, PageView::FormField *field) {
+            return fillFormField(page, point, field);
+        });
+    m_view->setFormFieldValueHandler(
+        [this](int page, int widgetIndex, const QString &value) {
+            return commitFormField(page, widgetIndex, value);
+        });
+    connect(m_view, &PageView::openRequested, this, &MainWindow::openFile);
     connect(m_view, &PageView::textSelected, this, [this]() {
         statusBar()->showMessage("Text selected: press Ctrl+C or right-click to copy it.", 5000);
     });
@@ -404,6 +420,10 @@ void MainWindow::setupToolbar()
         QSignalBlocker blocker(m_pageBox);
         m_pageBox->setRange(count > 0 ? 1 : 0, count);
         m_pageCountLabel->setText(QString(" / %1 ").arg(count));
+        restorePendingPage();
+    });
+    connect(m_document, &QPdfDocument::statusChanged, this, [this]() {
+        restorePendingPage();
     });
 
     connect(zoomInAction, &QAction::triggered, this, [this]() {
@@ -588,6 +608,7 @@ void MainWindow::openPath(const QString &path)
 
 void MainWindow::loadDocument(const QString &path)
 {
+    m_pendingPage = -1;
     const QString previousState = m_history.current();
     const int previousPage = m_view->currentPage();
     auto restorePreviousDocument = [this, &previousState, previousPage]() {
@@ -601,32 +622,45 @@ void MainWindow::loadDocument(const QString &path)
         }
     };
 
+    QString usedPassword;
+    auto authenticatedEditor = std::make_unique<PdfEditor>();
+    bool editorAvailable = authenticatedEditor->open(path);
+    QString editorOpenError = editorAvailable ? QString() : authenticatedEditor->lastError();
+    if (!editorAvailable && editorOpenError == QStringLiteral("Incorrect or missing password")) {
+        bool firstAttempt = true;
+        while (!editorAvailable) {
+            const QString prompt = firstAttempt
+                ? "This PDF is protected. Enter its password:"
+                : "Incorrect password. Try again:";
+            firstAttempt = false;
+
+            bool ok = false;
+            const QString password = QInputDialog::getText(
+                this, "Password required", prompt, QLineEdit::Password, QString(), &ok);
+            if (!ok) {
+                restorePreviousDocument();
+                updateTitle();
+                return;
+            }
+
+            auto candidateEditor = std::make_unique<PdfEditor>();
+            if (candidateEditor->open(path, password)) {
+                authenticatedEditor = std::move(candidateEditor);
+                editorAvailable = true;
+                usedPassword = password;
+            } else {
+                editorOpenError = candidateEditor->lastError();
+                editorAvailable = false;
+                if (editorOpenError != QStringLiteral("Incorrect or missing password"))
+                    break;
+            }
+        }
+    }
+
     clearPageRenderDocument();
     m_document->close();
-    m_document->setPassword(QString());
+    m_document->setPassword(usedPassword);
     QPdfDocument::Error error = m_document->load(path);
-
-    QString usedPassword;
-    bool firstAttempt = true;
-    while (error == QPdfDocument::Error::IncorrectPassword) {
-        const QString prompt = firstAttempt
-            ? "This PDF is protected. Enter its password:"
-            : "Incorrect password. Try again:";
-        firstAttempt = false;
-
-        bool ok = false;
-        const QString password = QInputDialog::getText(
-            this, "Password required", prompt, QLineEdit::Password, QString(), &ok);
-        if (!ok) {
-            restorePreviousDocument();
-            updateTitle();
-            return;
-        }
-
-        m_document->setPassword(password);
-        usedPassword = password;
-        error = m_document->load(path);
-    }
 
     if (error != QPdfDocument::Error::None) {
         restorePreviousDocument();
@@ -635,6 +669,7 @@ void MainWindow::loadDocument(const QString &path)
         return;
     }
 
+    m_view->clearFormFieldOverlays();
     m_editor.reset();
     removeSnapshots(m_history.states());
     m_history.clear();
@@ -645,9 +680,46 @@ void MainWindow::loadDocument(const QString &path)
     m_displayName = QFileInfo(path).fileName();
     addRecentFile(path);
 
-    openWorkingCopy(path, 0);
-    if (!m_editor)
-        statusBar()->showMessage("Editing is not available for this file.", 5000);
+    QString working = path;
+    bool workingCopyCreated = false;
+    if (m_tempDir.isValid()) {
+        const QString copy = m_tempDir.filePath(
+            QString("state-%1.pdf").arg(++m_editCount));
+        if (QFile::copy(path, copy)) {
+            working = copy;
+            workingCopyCreated = true;
+        }
+    }
+    m_history.reset(working);
+    if (editorAvailable) {
+        authenticatedEditor.reset();
+        if (workingCopyCreated) {
+            if (!showFile(working, 0)) {
+                editorAvailable = false;
+                editorOpenError = "Could not load the PDF working copy for display.";
+                showFile(path, 0, false);
+            } else {
+                m_editor = std::make_unique<PdfEditor>();
+                editorAvailable = m_editor->open(working, m_password);
+                if (editorAvailable)
+                    refreshFormFieldOverlays();
+                else
+                    editorOpenError = m_editor->lastError();
+            }
+        } else {
+            editorAvailable = false;
+            editorOpenError = "Could not create a working copy of the PDF.";
+        }
+    }
+    if (!editorAvailable) {
+        m_editor.reset();
+        QMessageBox::warning(
+            this, "Editing unavailable",
+            "The PDF opened for viewing, but editing could not be started:\n\n"
+                + (editorOpenError.isEmpty()
+                       ? QStringLiteral("No error details were provided.")
+                       : editorOpenError));
+    }
 
     updateActions();
     updateTitle();
@@ -655,13 +727,15 @@ void MainWindow::loadDocument(const QString &path)
 
 void MainWindow::goToPage(int page)
 {
-    if (page < 0 || page >= m_document->pageCount())
+    const int pageCount = m_document->pageCount();
+    if (pageCount <= 0 || page < 0 || page >= pageCount)
         return;
     m_view->jumpToPage(page);
 }
 
 bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
 {
+    m_pendingPage = -1;
     clearPageRenderDocument();
     m_document->close();
     m_document->setPassword(m_password);
@@ -688,10 +762,31 @@ bool MainWindow::showFile(const QString &path, int page, bool reportErrors)
         return false;
     }
 
-    const int target = qBound(0, page, m_document->pageCount() - 1);
+    const int pageCount = m_document->pageCount();
+    if (pageCount <= 0) {
+        m_pendingPage = qMax(0, page);
+        return true;
+    }
+    m_pendingPage = -1;
+    const int target = qBound(0, page, pageCount - 1);
     goToPage(target);
     m_thumbnails->setCurrentPage(target);
     return true;
+}
+
+void MainWindow::restorePendingPage()
+{
+    if (m_pendingPage < 0
+        || m_document->status() != QPdfDocument::Status::Ready
+        || m_document->pageCount() <= 0)
+        return;
+
+    const int target = qMin(m_pendingPage, m_document->pageCount() - 1);
+    m_pendingPage = -1;
+    goToPage(target);
+    m_thumbnails->setCurrentPage(target);
+    if (m_editor)
+        refreshFormFieldOverlays();
 }
 
 void MainWindow::clearPageRenderDocument()
@@ -757,10 +852,14 @@ void MainWindow::showAbout()
     QMessageBox::about(this, "About PDF Reader",
         "<h3>Offline PDF Reader/Editor</h3>"
         "<p>A desktop PDF reader and page editor built with Qt 6 and MuPDF.</p>"
-        "<p>Licensed under the GNU Affero General Public License v3.0.<br>"
-        "Source code: <a href=\"https://github.com/genecc04/offline-pdf-reader-editor\">"
+        "<p>Copyright &copy; 2026 genecc04.<br>"
+        "This program comes with ABSOLUTELY NO WARRANTY. It is free software, licensed "
+        "under the <a href=\"https://www.gnu.org/licenses/agpl-3.0.html\">"
+        "GNU Affero General Public License v3.0</a>, and you are welcome to "
+        "redistribute it under its conditions.</p>"
+        "<p>Source code: <a href=\"https://github.com/genecc04/offline-pdf-reader-editor\">"
         "github.com/genecc04/offline-pdf-reader-editor</a></p>"
-        "<p>Uses MuPDF (Artifex Software, Inc.) and Qt.</p>");
+        "<p>Uses MuPDF (Artifex Software, Inc.) and Qt. See THIRD_PARTY_NOTICES.md.</p>");
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
@@ -906,7 +1005,8 @@ bool MainWindow::refreshAfterEdit(int page, const QList<int> &reselect)
         m_thumbnails->selectPages(reselect);
 
     removeSnapshots(m_history.push(newPath));
-    reopenEditor(newPath);
+    if (reopenEditor(newPath))
+        refreshFormFieldOverlays();
     updateActions();
     updateTitle();
     return true;
@@ -1205,6 +1305,80 @@ void MainWindow::placeImage(int page, const QRectF &box, const QImage &image)
     refreshAfterPageEdit({ page }, page);
 }
 
+bool MainWindow::fillFormField(int page, const QPointF &point, PageView::FormField *result)
+{
+    if (!m_editor || !result)
+        return false;
+
+    PdfEditor::FormField field;
+    if (!m_editor->formFieldAt(page, point, &field)) {
+        QMessageBox::warning(this, "Fill form failed", m_editor->lastError());
+        return true;
+    }
+    if (field.type == PdfEditor::FormFieldType::None)
+        return false;
+
+    result->bounds = field.bounds;
+    result->value = field.value;
+    result->options = field.options;
+    result->optionValues = field.optionValues;
+    result->checked = field.checked;
+    result->readOnly = field.readOnly;
+    result->multiline = field.multiline;
+    result->password = field.password;
+    result->editableChoice = field.editableChoice;
+    result->widgetIndex = field.widgetIndex;
+    if (field.readOnly) {
+        const QString fieldName = field.label.isEmpty() ? field.name : field.label;
+        statusBar()->showMessage(fieldName.isEmpty() ? "This form field is read-only."
+                                                      : fieldName + " is read-only.",
+                                 4000);
+        return true;
+    }
+
+    switch (field.type) {
+    case PdfEditor::FormFieldType::Text:
+        result->type = PageView::FormField::Type::Text;
+        return true;
+    case PdfEditor::FormFieldType::ComboBox:
+        result->type = PageView::FormField::Type::ComboBox;
+        return true;
+    case PdfEditor::FormFieldType::ListBox:
+        result->type = PageView::FormField::Type::ListBox;
+        return true;
+    case PdfEditor::FormFieldType::CheckBox:
+        result->type = PageView::FormField::Type::CheckBox;
+        break;
+    case PdfEditor::FormFieldType::RadioButton:
+        result->type = PageView::FormField::Type::RadioButton;
+        break;
+    case PdfEditor::FormFieldType::None:
+        return false;
+    }
+
+    if (!m_editor->setFormFieldValue(page, field.widgetIndex, QString())) {
+        QMessageBox::warning(this, "Fill form failed", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return true;
+    }
+    refreshAfterEdit(page);
+    return true;
+}
+
+bool MainWindow::commitFormField(int page, int widgetIndex, const QString &value)
+{
+    if (!m_editor)
+        return false;
+    if (!m_editor->setFormFieldValue(page, widgetIndex, value)) {
+        QMessageBox::warning(this, "Fill form failed", m_editor->lastError());
+        reopenEditor(m_history.current());
+        updateActions();
+        return false;
+    }
+    return refreshAfterEdit(page);
+}
+
 void MainWindow::placeStrokes(const QVector<PageView::Stroke> &strokes)
 {
     if (!m_editor || strokes.isEmpty())
@@ -1274,8 +1448,12 @@ void MainWindow::stepHistory(const QString &path)
     if (!showFile(path, page))
         return;
 
-    if (!reopenEditor(path))
+    m_view->clearFormFieldOverlays();
+    if (!reopenEditor(path)) {
         QMessageBox::warning(this, "Editing", "Editing is no longer available for this file.");
+    } else {
+        refreshFormFieldOverlays();
+    }
 
     updateActions();
     updateTitle();
@@ -1376,7 +1554,8 @@ bool MainWindow::isTempFile(const QString &path) const
 
 bool MainWindow::isDocumentModified() const
 {
-    return m_history.isModified() || m_passwordChange != PasswordChange::None;
+    return m_history.isModified() || m_view->hasPendingChanges()
+           || m_passwordChange != PasswordChange::None;
 }
 
 bool MainWindow::isPasswordProtected() const
@@ -1467,6 +1646,64 @@ bool MainWindow::openWorkingCopy(const QString &source, int page)
 
     m_history.reset(working);
     const bool shown = showFile(working, page);
-    reopenEditor(working);
+    if (!reopenEditor(working) || !shown)
+        return shown;
+
+    refreshFormFieldOverlays();
     return shown;
+}
+
+bool MainWindow::refreshFormFieldOverlays()
+{
+    if (!m_editor || !m_document
+        || m_document->status() != QPdfDocument::Status::Ready)
+        return false;
+
+    for (int pageIndex = 0; pageIndex < m_document->pageCount(); ++pageIndex) {
+        QVector<PdfEditor::FormField> editorFields;
+        if (!m_editor->formFieldsOnPage(pageIndex, &editorFields)) {
+            QMessageBox::warning(this, "Form fields",
+                                 "Could not load form fields for display: "
+                                     + m_editor->lastError());
+            m_view->clearFormFieldOverlays();
+            return false;
+        }
+        QVector<PageView::FormField> viewFields;
+        viewFields.reserve(editorFields.size());
+        for (const PdfEditor::FormField &editorField : editorFields) {
+            PageView::FormField viewField;
+            switch (editorField.type) {
+            case PdfEditor::FormFieldType::Text:
+                viewField.type = PageView::FormField::Type::Text;
+                break;
+            case PdfEditor::FormFieldType::CheckBox:
+                viewField.type = PageView::FormField::Type::CheckBox;
+                break;
+            case PdfEditor::FormFieldType::RadioButton:
+                viewField.type = PageView::FormField::Type::RadioButton;
+                break;
+            case PdfEditor::FormFieldType::ComboBox:
+                viewField.type = PageView::FormField::Type::ComboBox;
+                break;
+            case PdfEditor::FormFieldType::ListBox:
+                viewField.type = PageView::FormField::Type::ListBox;
+                break;
+            case PdfEditor::FormFieldType::None:
+                continue;
+            }
+            viewField.bounds = editorField.bounds;
+            viewField.value = editorField.value;
+            viewField.options = editorField.options;
+            viewField.optionValues = editorField.optionValues;
+            viewField.checked = editorField.checked;
+            viewField.readOnly = editorField.readOnly;
+            viewField.multiline = editorField.multiline;
+            viewField.password = editorField.password;
+            viewField.editableChoice = editorField.editableChoice;
+            viewField.widgetIndex = editorField.widgetIndex;
+            viewFields.append(viewField);
+        }
+        m_view->setFormFields(pageIndex, viewFields);
+    }
+    return true;
 }

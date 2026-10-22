@@ -5,6 +5,7 @@
 #include <QPointF>
 #include <QVector>
 #include <QByteArray>
+#include <QStringList>
 
 struct fz_context;
 struct pdf_document;
@@ -12,6 +13,24 @@ struct pdf_document;
 class PdfEditor
 {
 public:
+    enum class FormFieldType { None, Text, CheckBox, RadioButton, ComboBox, ListBox };
+
+    struct FormField {
+        FormFieldType type = FormFieldType::None;
+        QRectF bounds;
+        QString name;
+        QString label;
+        QString value;
+        QStringList options;
+        QStringList optionValues;
+        bool checked = false;
+        bool readOnly = false;
+        bool multiline = false;
+        bool password = false;
+        bool editableChoice = false;
+        int widgetIndex = -1;
+    };
+
     PdfEditor();
     ~PdfEditor();
 
@@ -40,6 +59,9 @@ public:
     bool eraseInk(int pageIndex, const QVector<QPointF> &path, double radius,
                   int *annotationsRemoved = nullptr);
     bool addImageStamp(int pageIndex, const QRectF &box, const QByteArray &imageData);
+    bool formFieldsOnPage(int pageIndex, QVector<FormField> *fields);
+    bool formFieldAt(int pageIndex, const QPointF &point, FormField *field);
+    bool setFormFieldValue(int pageIndex, int widgetIndex, const QString &value);
     void close();
 
     QString lastError() const { return m_error; }
