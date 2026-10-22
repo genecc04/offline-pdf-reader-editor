@@ -104,10 +104,19 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.c
 cmake --build build --config Debug
 ```
 
+### Project layout
+
+- `src/app`: application entry point and main-window workflows
+- `src/pdf`: PDF editing backend
+- `src/ui`: document view, panels, dialogs, and UI helpers
+- `src/core`: shared application logic such as edit history
+- `resources`: application icons and Qt/Windows resource files
+- `scripts`: development and packaging scripts
+
 ### Packaging a release
 
 ```
-powershell -ExecutionPolicy Bypass -File .\package.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\package.ps1
 ```
 
 This builds in Release mode and creates `dist/PDF@home-windows.zip` with the program,

@@ -1,16 +1,33 @@
 [CmdletBinding()]
 param(
     [string]$QtRoot = "C:\Qt\6.8.0\msvc2022_64",
+    [string]$CMakePath,
     [string]$BuildDir = "build",
     [string]$OutputDirectory = "dist\PDF@home-windows"
 )
 
 $ErrorActionPreference = "Stop"
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Push-Location $repoRoot
 
 try {
-    $cmake = Get-Command cmake -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace($CMakePath)) {
+        $cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
+        if ($cmakeCommand) {
+            $CMakePath = $cmakeCommand.Source
+        } else {
+            $visualStudioCMake = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+            if (Test-Path $visualStudioCMake -PathType Leaf) {
+                $CMakePath = $visualStudioCMake
+            } else {
+                throw "Could not find CMake on PATH or at '$visualStudioCMake'. Pass its full path with -CMakePath."
+            }
+        }
+    }
+    if (-not (Test-Path $CMakePath -PathType Leaf)) {
+        throw "CMake executable not found at '$CMakePath'. Pass the full path to cmake.exe with -CMakePath."
+    }
+
     $qtDeploy = Join-Path $QtRoot "bin\windeployqt.exe"
     if (-not (Test-Path $qtDeploy -PathType Leaf)) {
         throw "Could not find windeployqt at '$qtDeploy'. Pass the Qt installation directory with -QtRoot."
@@ -24,7 +41,7 @@ try {
         }
     }
 
-    & $cmake.Source --build $BuildDir --config Release --target PdfApp --parallel
+    & $CMakePath --build $BuildDir --config Release --target PdfApp --parallel
     if ($LASTEXITCODE -ne 0) {
         throw "CMake Release build failed with exit code $LASTEXITCODE."
     }
@@ -48,7 +65,7 @@ try {
     }
 
     foreach ($requiredDll in @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll",
-                               "Qt6Pdf.dll", "Qt6PdfWidgets.dll")) {
+                               "Qt6Pdf.dll", "Qt6Network.dll")) {
         if (-not (Test-Path (Join-Path $stagePath $requiredDll) -PathType Leaf)) {
             throw "The deployed Qt runtime is incomplete; '$requiredDll' was not found."
         }

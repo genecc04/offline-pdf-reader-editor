@@ -1,0 +1,351 @@
+#include "MainWindow.h"
+#include "BookmarkPane.h"
+#include "PdfEditor.h"
+#include "SearchPane.h"
+#include "ThumbnailPane.h"
+
+#include <QAction>
+#include <QApplication>
+#include <QCloseEvent>
+#include <QDebug>
+#include <QDir>
+#include <QDockWidget>
+#include <QFile>
+#include <QFileInfo>
+#include <QInputDialog>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QPdfDocument>
+#include <QSettings>
+#include <QSpinBox>
+#include <QStatusBar>
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+{
+    setupViewer();
+    setupThumbnailPane();
+    setupSearchPane();
+    setupBookmarkPane();
+    setupMenus();
+    setupToolbar();
+    setupImageToolbar();
+    setupTextToolbar();
+    setupDrawToolbar();
+    updateActions();
+
+    setAcceptDrops(true);
+    setWindowIcon(qApp->windowIcon());
+    setWindowTitle("PDF@home");
+    resize(900, 700);
+
+    QSettings settings;
+    restoreGeometry(settings.value("window/geometry").toByteArray());
+    restoreState(settings.value("window/state").toByteArray(), 1);
+}
+
+MainWindow::~MainWindow()
+{
+    m_editor.reset();
+
+    if (m_view) {
+        m_view->setPageRenderDocument(nullptr);
+        m_view->setDocument(nullptr);
+    }
+    if (m_thumbnails) {
+        m_thumbnails->setPageRenderDocument(nullptr);
+        m_thumbnails->setDocument(nullptr);
+    }
+    if (m_searchDock) {
+        delete m_searchDock;
+        m_searchDock = nullptr;
+        m_search = nullptr;
+    }
+    if (m_bookmarks)
+        m_bookmarks->setDocument(nullptr);
+
+    if (m_pageRenderDocument) {
+        m_pageRenderDocument->close();
+        delete m_pageRenderDocument;
+        m_pageRenderDocument = nullptr;
+    }
+    if (m_document) {
+        m_document->close();
+        delete m_document;
+        m_document = nullptr;
+    }
+
+    if (!m_tempDir.isValid())
+        return;
+
+    const QFileInfoList files = QDir(m_tempDir.path()).entryInfoList(
+        QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot);
+    for (const QFileInfo &fileInfo : files)
+        removeTempFile(fileInfo.absoluteFilePath(), true);
+}
+
+// document state
+
+bool MainWindow::confirmDiscard()
+{
+    m_view->commitPendingEdits();
+    if (!isDocumentModified())
+        return true;
+
+    const auto answer = QMessageBox::question(
+        this, "Unsaved changes",
+        "You have unsaved changes. Save them first?",
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+
+    if (answer == QMessageBox::Save)
+        return save();
+    return answer == QMessageBox::Discard;
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!confirmDiscard()) {
+        event->ignore();
+        return;
+    }
+
+    QSettings settings;
+    settings.setValue("window/geometry", saveGeometry());
+    settings.setValue("window/state", saveState(1));
+    event->accept();
+}
+
+void MainWindow::updateTitle()
+{
+    if (m_displayName.isEmpty())
+        setWindowTitle("PDF@home");
+    else
+        setWindowTitle(m_displayName + (isDocumentModified() ? " *" : "") + " - PDF@home");
+}
+
+void MainWindow::updateActions()
+{
+    const bool editable = (m_editor != nullptr);
+
+    m_saveAction->setEnabled(editable && isDocumentModified());
+    m_setPasswordAction->setEnabled(editable);
+    m_removePasswordAction->setEnabled(editable && isPasswordProtected());
+    m_extractAction->setEnabled(editable);
+    m_insertAction->setEnabled(editable);
+    m_highlightAction->setEnabled(editable);
+    m_addTextAction->setEnabled(editable);
+    if (!editable && m_addTextAction->isChecked())
+        m_addTextAction->setChecked(false);
+    m_rotateLeftAction->setEnabled(editable);
+    m_rotateRightAction->setEnabled(editable);
+    m_deletePageAction->setEnabled(editable);
+    m_thumbnails->setReorderEnabled(editable);
+
+    m_undoAction->setEnabled(editable && (m_history.canUndo() || m_view->hasPendingStrokes()));
+    m_redoAction->setEnabled(editable && m_history.canRedo());
+    m_addImageAction->setEnabled(editable);
+
+    m_drawAction->setEnabled(editable);
+    if (!editable && m_drawAction->isChecked())
+        m_drawAction->setChecked(false);
+}
+
+bool MainWindow::reopenEditor(const QString &path)
+{
+    m_editor = std::make_unique<PdfEditor>();
+    if (m_editor->open(path, m_password))
+        return true;
+
+    m_editor.reset();
+    return false;
+}
+
+void MainWindow::removeSnapshots(const QStringList &paths)
+{
+    for (const QString &path : paths) {
+        if (isTempFile(path))
+            removeTempFile(path);
+    }
+}
+
+bool MainWindow::removeTempFile(const QString &path, bool reportFailure)
+{
+    QFile file(path);
+    if (!file.exists())
+        return true;
+
+    if (!file.setPermissions(file.permissions() | QFileDevice::WriteOwner)
+        || !file.remove()) {
+        if (reportFailure) {
+            qWarning().noquote() << "Could not remove temporary PDF snapshot"
+                                 << path << ":" << file.errorString();
+        }
+        return false;
+    }
+    return true;
+}
+
+bool MainWindow::isTempFile(const QString &path) const
+{
+    if (!m_tempDir.isValid())
+        return false;
+    const QString folder = QDir::cleanPath(m_tempDir.path()) + '/';
+    return QDir::cleanPath(path).startsWith(folder);
+}
+
+bool MainWindow::isDocumentModified() const
+{
+    return m_history.isModified() || m_view->hasPendingChanges()
+           || m_passwordChange != PasswordChange::None;
+}
+
+bool MainWindow::isPasswordProtected() const
+{
+    return m_passwordChange == PasswordChange::Set
+           || (m_passwordChange == PasswordChange::None && !m_password.isEmpty());
+}
+
+PdfEditor::Encryption MainWindow::saveEncryption() const
+{
+    switch (m_passwordChange) {
+    case PasswordChange::Set:    return PdfEditor::Encryption::Aes256;
+    case PasswordChange::Remove: return PdfEditor::Encryption::Remove;
+    default:                     return PdfEditor::Encryption::Keep;
+    }
+}
+
+void MainWindow::setDocumentPassword()
+{
+    if (!m_editor)
+        return;
+
+    bool ok = false;
+    const QString first = QInputDialog::getText(
+        this, "Set password",
+        "Enter a password. Anyone opening the saved file will need it.\n"
+        "If you forget it, the file cannot be recovered.",
+        QLineEdit::Password, QString(), &ok);
+    if (!ok)
+        return;
+    if (first.isEmpty()) {
+        QMessageBox::warning(this, "Set password", "The password cannot be empty.");
+        return;
+    }
+    if (first.toUtf8().size() > 127) {
+        QMessageBox::warning(this, "Set password",
+                             "That password is too long (127 characters at most).");
+        return;
+    }
+
+    const QString second = QInputDialog::getText(
+        this, "Set password", "Enter the password again to confirm:",
+        QLineEdit::Password, QString(), &ok);
+    if (!ok)
+        return;
+    if (second != first) {
+        QMessageBox::warning(this, "Set password", "The two passwords don't match.");
+        return;
+    }
+
+    m_passwordChange = PasswordChange::Set;
+    m_newPassword = first;
+    updateActions();
+    updateTitle();
+    statusBar()->showMessage(
+        "The password will be applied when you save (File > Save or Save As).", 8000);
+}
+
+void MainWindow::removeDocumentPassword()
+{
+    if (!m_editor)
+        return;
+
+    const auto answer = QMessageBox::question(
+        this, "Remove password",
+        "Remove the password? Anyone will be able to open the saved file without one.",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+
+    m_passwordChange = m_password.isEmpty() ? PasswordChange::None : PasswordChange::Remove;
+    m_newPassword.clear();
+    updateActions();
+    updateTitle();
+    statusBar()->showMessage(m_passwordChange == PasswordChange::Remove
+        ? "The password will be removed when you save (File > Save or Save As)."
+        : "No password will be set.", 8000);
+}
+
+bool MainWindow::openWorkingCopy(const QString &source, int page)
+{
+    QString working = source;
+    if (m_tempDir.isValid()) {
+        const QString copy = m_tempDir.filePath(QString("state-%1.pdf").arg(++m_editCount));
+        if (QFile::copy(source, copy))
+            working = copy;
+    }
+
+    m_history.reset(working);
+    const bool shown = showFile(working, page);
+    if (!reopenEditor(working) || !shown)
+        return shown;
+
+    refreshFormFieldOverlays();
+    return shown;
+}
+
+bool MainWindow::refreshFormFieldOverlays()
+{
+    if (!m_editor || !m_document
+        || m_document->status() != QPdfDocument::Status::Ready)
+        return false;
+
+    for (int pageIndex = 0; pageIndex < m_document->pageCount(); ++pageIndex) {
+        QVector<PdfEditor::FormField> editorFields;
+        if (!m_editor->formFieldsOnPage(pageIndex, &editorFields)) {
+            QMessageBox::warning(this, "Form fields",
+                                 "Could not load form fields for display: "
+                                     + m_editor->lastError());
+            m_view->clearFormFieldOverlays();
+            return false;
+        }
+        QVector<PageView::FormField> viewFields;
+        viewFields.reserve(editorFields.size());
+        for (const PdfEditor::FormField &editorField : editorFields) {
+            PageView::FormField viewField;
+            switch (editorField.type) {
+            case PdfEditor::FormFieldType::Text:
+                viewField.type = PageView::FormField::Type::Text;
+                break;
+            case PdfEditor::FormFieldType::CheckBox:
+                viewField.type = PageView::FormField::Type::CheckBox;
+                break;
+            case PdfEditor::FormFieldType::RadioButton:
+                viewField.type = PageView::FormField::Type::RadioButton;
+                break;
+            case PdfEditor::FormFieldType::ComboBox:
+                viewField.type = PageView::FormField::Type::ComboBox;
+                break;
+            case PdfEditor::FormFieldType::ListBox:
+                viewField.type = PageView::FormField::Type::ListBox;
+                break;
+            case PdfEditor::FormFieldType::None:
+                continue;
+            }
+            viewField.bounds = editorField.bounds;
+            viewField.value = editorField.value;
+            viewField.options = editorField.options;
+            viewField.optionValues = editorField.optionValues;
+            viewField.checked = editorField.checked;
+            viewField.readOnly = editorField.readOnly;
+            viewField.multiline = editorField.multiline;
+            viewField.password = editorField.password;
+            viewField.editableChoice = editorField.editableChoice;
+            viewField.widgetIndex = editorField.widgetIndex;
+            viewFields.append(viewField);
+        }
+        m_view->setFormFields(pageIndex, viewFields);
+    }
+    return true;
+}

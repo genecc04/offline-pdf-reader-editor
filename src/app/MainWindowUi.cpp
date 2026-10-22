@@ -1,0 +1,509 @@
+#include "MainWindow.h"
+#include "BookmarkPane.h"
+#include "ColorMenuButton.h"
+#include "PdfEditor.h"
+#include "SearchPane.h"
+#include "ThumbnailPane.h"
+
+#include <QAction>
+#include <QActionGroup>
+#include <QApplication>
+#include <QColor>
+#include <QComboBox>
+#include <QDockWidget>
+#include <QKeySequence>
+#include <QLabel>
+#include <QMenu>
+#include <QMenuBar>
+#include <QPdfDocument>
+#include <QSignalBlocker>
+#include <QSpinBox>
+#include <QStatusBar>
+#include <QToolBar>
+
+void MainWindow::setupViewer()
+{
+    m_document = new QPdfDocument(this);
+    m_pageRenderDocument = new QPdfDocument(this);
+
+    m_view = new PageView(this);
+    m_view->setDocument(m_document);
+    m_view->setZoomMode(PageView::ZoomMode::FitToWidth);
+    setCentralWidget(m_view);
+
+    connect(m_view, &PageView::textPlaced, this, &MainWindow::placeText);
+    connect(m_view, &PageView::textAnnotationEditRequested, m_view,
+            &PageView::editTextAnnotationInline);
+    connect(m_view, &PageView::textAnnotationEdited,
+            this, &MainWindow::updateTextAnnotation);
+    connect(m_view, &PageView::textAnnotationDeleteRequested,
+            this, &MainWindow::deleteTextAnnotation);
+    connect(m_view, &PageView::textAnnotationBoundsChanged,
+            this, &MainWindow::updateTextAnnotationBounds);
+    connect(m_view, &PageView::textAnnotationSelectionChanged, this, [this](bool selected) {
+        if (m_deleteTextAction)
+            m_deleteTextAction->setEnabled(selected && m_editor != nullptr);
+    });
+    connect(m_view, &PageView::textToolFinished, this, [this]() {
+        m_addTextAction->setChecked(false);
+    });
+    connect(m_view, &PageView::strokesPlaced, this, &MainWindow::placeStrokes);
+    connect(m_view, &PageView::eraseRequested, this, &MainWindow::eraseInk);
+    connect(m_view, &PageView::pendingStrokesChanged, this, [this]() {
+        updateActions();
+        updateTitle();
+    });
+    connect(m_view, &PageView::pendingChangesChanged, this, [this]() {
+        updateActions();
+        updateTitle();
+    });
+    connect(m_view, &PageView::imagePlaced, this, &MainWindow::placeImage);
+    connect(m_view, &PageView::imagePlacementStateChanged, this,
+            [this](bool active, bool positioned) {
+        m_cancelImageAction->setEnabled(active);
+        m_cropImageAction->setEnabled(positioned);
+        if (!positioned) {
+            QSignalBlocker blocker(m_cropImageAction);
+            m_cropImageAction->setChecked(false);
+        }
+    });
+    connect(m_view, &PageView::imageCropModeChanged, this, [this](bool active) {
+        {
+            QSignalBlocker blocker(m_cropImageAction);
+            m_cropImageAction->setChecked(active);
+        }
+        if (active) {
+            statusBar()->showMessage(
+                "Crop mode: drag a corner inward to crop. Select Crop again to finish cropping.",
+                12000);
+        } else if (m_cancelImageAction->isEnabled()) {
+            statusBar()->showMessage(
+                "Image placement: drag to move or resize. Select Crop to crop; Enter places; "
+                "Esc cancels.",
+                12000);
+        } else {
+            statusBar()->clearMessage();
+        }
+    });
+    m_view->setFormFieldHandler(
+        [this](int page, const QPointF &point, PageView::FormField *field) {
+            return fillFormField(page, point, field);
+        });
+    m_view->setFormFieldValueHandler(
+        [this](int page, int widgetIndex, const QString &value) {
+            return commitFormField(page, widgetIndex, value);
+        });
+    m_view->setTextAnnotationHandler(
+        [this](int page, const QPointF &point, int *annotationId,
+               QRectF *bounds, QString *text, PageView::TextStyle *style) {
+            QString fontName;
+            double fontSize = 12.0;
+            QColor color;
+            if (!m_editor
+                || !m_editor->textAnnotationAt(page, point, annotationId, bounds, text,
+                                               &fontName, &fontSize, &color))
+                return false;
+
+            style->family = fontName == QLatin1String("TiRo")
+                ? QStringLiteral("Times")
+                : fontName == QLatin1String("Cour")
+                    ? QStringLiteral("Courier")
+                    : QStringLiteral("Helvetica");
+            style->sizePoints = fontSize;
+            style->color = color;
+            return true;
+        });
+    connect(m_view, &PageView::openRequested, this, &MainWindow::openFile);
+    connect(m_view, &PageView::textSelected, this, [this]() {
+        statusBar()->showMessage("Text selected: press Ctrl+C or right-click to copy it.", 5000);
+    });
+}
+
+void MainWindow::setupThumbnailPane()
+{
+    m_thumbnails = new ThumbnailPane(this);
+    m_thumbnails->setDocument(m_document);
+
+    m_pagesDock = new QDockWidget("Pages", this);
+    m_pagesDock->setObjectName("pagesDock");
+    m_pagesDock->setWidget(m_thumbnails);
+    m_pagesDock->setFeatures(QDockWidget::DockWidgetClosable |
+                             QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_pagesDock);
+
+    connect(m_thumbnails, &ThumbnailPane::pageRequested, this, &MainWindow::goToPage);
+    connect(m_view, &PageView::currentPageChanged,
+            m_thumbnails, &ThumbnailPane::setCurrentPage);
+
+    connect(m_thumbnails, &ThumbnailPane::pageMoveRequested, this,
+            &MainWindow::movePage, Qt::QueuedConnection);
+}
+
+void MainWindow::setupSearchPane()
+{
+    m_search = new SearchPane(this);
+    m_search->setDocument(m_document);
+    m_view->setSearchModel(m_search->searchModel());
+
+    m_searchDock = new QDockWidget("Search", this);
+    m_searchDock->setObjectName("searchDock");
+    m_searchDock->setWidget(m_search);
+    m_searchDock->setFeatures(QDockWidget::DockWidgetClosable |
+                              QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_searchDock);
+    tabifyDockWidget(m_pagesDock, m_searchDock);
+    m_pagesDock->raise();
+
+    connect(m_search, &SearchPane::resultSelected, this,
+            [this](int index, int page, QPointF location) {
+                m_view->jumpToPage(page, location);
+                m_view->setCurrentSearchResultIndex(index);
+            });
+}
+
+void MainWindow::setupBookmarkPane()
+{
+    m_bookmarks = new BookmarkPane(this);
+    m_bookmarks->setDocument(m_document);
+
+    m_bookmarksDock = new QDockWidget("Bookmarks", this);
+    m_bookmarksDock->setObjectName("bookmarksDock");
+    m_bookmarksDock->setWidget(m_bookmarks);
+    m_bookmarksDock->setFeatures(QDockWidget::DockWidgetClosable |
+                                 QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_bookmarksDock);
+    tabifyDockWidget(m_pagesDock, m_bookmarksDock);
+    m_pagesDock->raise();
+
+    connect(m_bookmarks, &BookmarkPane::bookmarkSelected, this,
+            [this](int page, QPointF location) {
+                m_view->jumpToPage(page, location);
+            });
+}
+
+void MainWindow::setupMenus()
+{
+    QMenu *fileMenu = menuBar()->addMenu("&File");
+    QAction *openAction = fileMenu->addAction("&Open...");
+    openAction->setShortcut(QKeySequence::Open);
+    connect(openAction, &QAction::triggered, this, &MainWindow::openFile);
+
+    m_recentMenu = fileMenu->addMenu("Open &Recent");
+    updateRecentMenu();
+
+    fileMenu->addSeparator();
+
+    m_saveAction = fileMenu->addAction("&Save");
+    m_saveAction->setShortcut(QKeySequence::Save);
+    connect(m_saveAction, &QAction::triggered, this, &MainWindow::save);
+
+    m_saveAsAction = fileMenu->addAction("Save &As...");
+    m_saveAsAction->setShortcut(QKeySequence::SaveAs);
+    connect(m_saveAsAction, &QAction::triggered, this, &MainWindow::saveAs);
+
+    m_extractAction = fileMenu->addAction("&Extract pages...");
+    connect(m_extractAction, &QAction::triggered, this, &MainWindow::extractPages);
+
+    m_insertAction = fileMenu->addAction("&Insert pages from PDF...");
+    connect(m_insertAction, &QAction::triggered, this, &MainWindow::insertPages);
+
+    fileMenu->addSeparator();
+
+    m_setPasswordAction = fileMenu->addAction("Set &password...");
+    connect(m_setPasswordAction, &QAction::triggered, this, &MainWindow::setDocumentPassword);
+
+    m_removePasswordAction = fileMenu->addAction("Re&move password");
+    connect(m_removePasswordAction, &QAction::triggered, this, &MainWindow::removeDocumentPassword);
+
+    QMenu *editMenu = menuBar()->addMenu("&Edit");
+    m_undoAction = editMenu->addAction("&Undo");
+    m_undoAction->setShortcut(QKeySequence::Undo);
+    connect(m_undoAction, &QAction::triggered, this, &MainWindow::undo);
+
+    m_redoAction = editMenu->addAction("&Redo");
+    m_redoAction->setShortcut(QKeySequence::Redo);
+    connect(m_redoAction, &QAction::triggered, this, &MainWindow::redo);
+
+    editMenu->addSeparator();
+
+    m_highlightAction = editMenu->addAction("&Highlight text...");
+    m_highlightAction->setShortcut(Qt::CTRL | Qt::Key_H);
+    connect(m_highlightAction, &QAction::triggered, this, &MainWindow::highlightText);
+
+    m_addTextAction = editMenu->addAction("Add &text");
+    m_addTextAction->setCheckable(true);
+    m_addTextAction->setShortcut(Qt::CTRL | Qt::Key_T);
+        connect(m_addTextAction, &QAction::toggled, this, [this](bool on) {
+        if (on)
+            m_view->commitPendingEdits();
+        m_view->setTextToolActive(on);
+        if (on) {
+            statusBar()->showMessage(
+                "Drag a box on the page and type. Click elsewhere to place it. "
+                "Double-click added text to edit; right-click it to edit or delete.",
+                10000);
+        }
+    });
+
+    m_drawAction = editMenu->addAction("&Draw");
+    m_drawAction->setCheckable(true);
+    m_drawAction->setShortcut(Qt::CTRL | Qt::Key_D);
+    connect(m_drawAction, &QAction::toggled, this, [this](bool on) {
+        if (on)
+            m_view->commitPendingEdits();
+        m_view->setDrawToolActive(on);
+        if (on) {
+            statusBar()->showMessage(
+                "Draw strokes or erase existing Ink strokes. The eraser does not affect "
+                "highlights or images. Ctrl+Z removes your last pending stroke. "
+                "Turn Draw off to add everything to the document.", 10000);
+        }
+    });
+
+    auto *toolGroup = new QActionGroup(this);
+    toolGroup->setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
+    toolGroup->addAction(m_addTextAction);
+    toolGroup->addAction(m_drawAction);
+
+    m_addImageAction = editMenu->addAction("Add &image...");
+    m_addImageAction->setShortcut(Qt::CTRL | Qt::Key_I);
+    connect(m_addImageAction, &QAction::triggered, this, &MainWindow::addImage);
+
+    QMenu *viewMenu = menuBar()->addMenu("&View");
+    QAction *togglePages = m_pagesDock->toggleViewAction();
+    togglePages->setShortcut(Qt::Key_F4);
+    viewMenu->addAction(togglePages);
+    QAction *toggleBookmarks = m_bookmarksDock->toggleViewAction();
+    toggleBookmarks->setShortcut(Qt::CTRL | Qt::Key_B);
+    viewMenu->addAction(toggleBookmarks);
+
+    QAction *findAction = viewMenu->addAction("&Find...");
+    findAction->setShortcut(QKeySequence::Find);
+    connect(findAction, &QAction::triggered, this, [this]() {
+        m_searchDock->show();
+        m_searchDock->raise();
+        m_search->focusSearchBox();
+    });
+
+    QMenu *helpMenu = menuBar()->addMenu("&Help");
+    connect(helpMenu->addAction("&About"), &QAction::triggered, this, &MainWindow::showAbout);
+    connect(helpMenu->addAction("About &Qt"), &QAction::triggered, qApp, &QApplication::aboutQt);
+}
+
+void MainWindow::setupToolbar()
+{
+    QToolBar *toolbar = addToolBar("Navigation");
+    toolbar->setObjectName("navigationToolbar");
+    toolbar->setMovable(false);
+
+    // Page navigation
+    QAction *prevAction = toolbar->addAction("< Prev");
+    QAction *nextAction = toolbar->addAction("Next >");
+
+    m_pageBox = new QSpinBox(this);
+    m_pageBox->setRange(0, 0);
+    toolbar->addWidget(m_pageBox);
+    m_pageCountLabel = new QLabel(" / 0 ", this);
+    toolbar->addWidget(m_pageCountLabel);
+
+    toolbar->addSeparator();
+
+    // Zoom
+    QAction *zoomOutAction = toolbar->addAction("Zoom -");
+    QAction *zoomInAction = toolbar->addAction("Zoom +");
+    QAction *fitWidthAction = toolbar->addAction("Fit width");
+    QAction *fitPageAction = toolbar->addAction("Fit page");
+
+    toolbar->addSeparator();
+
+    // Editing
+    m_rotateLeftAction = toolbar->addAction("Rotate left");
+    m_rotateLeftAction->setShortcut(Qt::CTRL | Qt::Key_L);
+    m_rotateRightAction = toolbar->addAction("Rotate right");
+    m_rotateRightAction->setShortcut(Qt::CTRL | Qt::Key_R);
+    connect(m_rotateLeftAction, &QAction::triggered, this, [this]() { rotateSelectedPages(-90); });
+    connect(m_rotateRightAction, &QAction::triggered, this, [this]() { rotateSelectedPages(90); });
+
+    m_deletePageAction = toolbar->addAction("Delete pages");
+    connect(m_deletePageAction, &QAction::triggered, this, &MainWindow::deleteSelectedPages);
+
+    // Wiring
+    connect(prevAction, &QAction::triggered, this, [this]() {
+        goToPage(m_view->currentPage() - 1);
+    });
+    connect(nextAction, &QAction::triggered, this, [this]() {
+        goToPage(m_view->currentPage() + 1);
+    });
+    connect(m_pageBox, &QSpinBox::valueChanged, this, [this](int value) {
+        goToPage(value - 1);
+    });
+    connect(m_view, &PageView::currentPageChanged, this, [this](int page) {
+        QSignalBlocker blocker(m_pageBox);
+        m_pageBox->setValue(page + 1);
+    });
+    connect(m_document, &QPdfDocument::pageCountChanged, this, [this](int count) {
+        QSignalBlocker blocker(m_pageBox);
+        m_pageBox->setRange(count > 0 ? 1 : 0, count);
+        m_pageCountLabel->setText(QString(" / %1 ").arg(count));
+        restorePendingPage();
+    });
+    connect(m_document, &QPdfDocument::statusChanged, this, [this]() {
+        restorePendingPage();
+    });
+
+    connect(zoomInAction, &QAction::triggered, this, [this]() {
+        m_view->setZoomFactor(m_view->zoomFactor() * 1.25);
+    });
+    connect(zoomOutAction, &QAction::triggered, this, [this]() {
+        m_view->setZoomFactor(m_view->zoomFactor() / 1.25);
+    });
+    connect(fitWidthAction, &QAction::triggered, this, [this]() {
+        m_view->setZoomMode(PageView::ZoomMode::FitToWidth);
+    });
+    connect(fitPageAction, &QAction::triggered, this, [this]() {
+        m_view->setZoomMode(PageView::ZoomMode::FitInView);
+    });
+}
+
+void MainWindow::setupImageToolbar()
+{
+    QToolBar *toolbar = addToolBar("Image");
+    toolbar->setObjectName("imageToolbar");
+    toolbar->setMovable(false);
+
+    toolbar->addAction(m_addImageAction);
+    toolbar->addSeparator();
+
+    m_cropImageAction = toolbar->addAction("Crop");
+    m_cropImageAction->setCheckable(true);
+    m_cropImageAction->setEnabled(false);
+    connect(m_cropImageAction, &QAction::toggled,
+            m_view, &PageView::setImageCropMode);
+
+    m_cancelImageAction = toolbar->addAction("Cancel");
+    m_cancelImageAction->setEnabled(false);
+    m_cancelImageAction->setShortcut(QKeySequence(Qt::Key_Escape));
+    m_cancelImageAction->setShortcutContext(Qt::WindowShortcut);
+    addAction(m_cancelImageAction);
+    connect(m_cancelImageAction, &QAction::triggered,
+            m_view, &PageView::cancelImagePlacement);
+}
+
+void MainWindow::setupTextToolbar()
+{
+    QToolBar *toolbar = addToolBar("Text");
+    toolbar->setObjectName("textToolbar");
+    toolbar->setMovable(false);
+
+    toolbar->addAction(m_addTextAction);
+    m_deleteTextAction = toolbar->addAction("Delete");
+    m_deleteTextAction->setEnabled(false);
+    m_deleteTextAction->setToolTip("Delete selected text box");
+    connect(m_deleteTextAction, &QAction::triggered,
+            m_view, &PageView::deleteSelectedTextAnnotation);
+    toolbar->addSeparator();
+
+    auto *fontBox = new QComboBox(this);
+    fontBox->addItems({ "Helvetica", "Times", "Courier" });
+    fontBox->setCurrentText("Helvetica");
+    fontBox->setMinimumWidth(130);
+    fontBox->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(fontBox);
+
+    auto *size = new QSpinBox(this);
+    size->setRange(6, 200);
+    size->setValue(12);
+    size->setSuffix(" pt");
+    size->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(size);
+
+    auto *colorButton = new ColorMenuButton(QColor(0, 0, 0), this);
+    toolbar->addWidget(colorButton);
+
+    auto applyStyle = [this, fontBox, size, colorButton]() {
+        PageView::TextStyle style;
+        style.family = fontBox->currentText();
+        style.sizePoints = size->value();
+        style.color = colorButton->color();
+        m_view->setTextStyle(style);
+    };
+    connect(fontBox, &QComboBox::currentTextChanged, this, applyStyle);
+    connect(size, &QSpinBox::valueChanged, this, applyStyle);
+    connect(colorButton, &ColorMenuButton::colorChanged, this, applyStyle);
+
+    toolbar->addSeparator();
+    applyStyle();
+}
+
+void MainWindow::setupDrawToolbar()
+{
+    QToolBar *toolbar = addToolBar("Draw");
+    toolbar->setObjectName("drawToolbar");
+    toolbar->setMovable(false);
+
+    toolbar->addAction(m_drawAction);
+
+    auto *mode = new QComboBox(this);
+    mode->addItem("Pen");
+    mode->addItem("Highlighter");
+    mode->addItem("White-out");
+    mode->addItem("Eraser");
+    mode->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(mode);
+
+    toolbar->addWidget(new QLabel(" Size ", this));
+    auto *size = new QSpinBox(this);
+    size->setRange(1, 60);
+    size->setValue(2);
+    size->setSuffix(" pt");
+    size->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(size);
+
+    toolbar->addWidget(new QLabel(" Opacity ", this));
+    auto *opacity = new QSpinBox(this);
+    opacity->setRange(5, 100);
+    opacity->setValue(100);
+    opacity->setSuffix(" %");
+    opacity->setFocusPolicy(Qt::NoFocus);
+    toolbar->addWidget(opacity);
+
+    auto *colorButton = new ColorMenuButton(QColor(0, 0, 0), this);
+    toolbar->addWidget(colorButton);
+
+    auto applyStyle = [this, size, opacity, colorButton]() {
+        PageView::DrawStyle style;
+        style.color = colorButton->color();
+        style.widthPoints = size->value();
+        style.opacity = opacity->value() / 100.0;
+        m_view->setDrawStyle(style);
+    };
+    connect(size, &QSpinBox::valueChanged, this, applyStyle);
+    connect(opacity, &QSpinBox::valueChanged, this, applyStyle);
+    connect(colorButton, &ColorMenuButton::colorChanged, this, applyStyle);
+
+    connect(mode, &QComboBox::currentIndexChanged, this,
+            [this, size, opacity, colorButton, applyStyle](int index) {
+                if (index == 3)
+                    m_view->commitPendingEdits();
+                if (index == 0) {
+                    size->setValue(2);
+                    opacity->setValue(100);
+                    colorButton->setColor(QColor(0, 0, 0));
+                } else if (index == 1) {
+                    size->setValue(14);
+                    opacity->setValue(35);
+                    colorButton->setColor(QColor(255, 220, 0));
+                } else if (index == 2) {
+                    size->setValue(16);
+                    opacity->setValue(100);
+                    colorButton->setColor(QColor(255, 255, 255));
+                } else {
+                    size->setValue(16);
+                }
+                opacity->setEnabled(index != 3);
+                colorButton->setEnabled(index != 3);
+                m_view->setEraserActive(index == 3);
+                applyStyle();
+            });
+    applyStyle();
+}
