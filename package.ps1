@@ -2,7 +2,7 @@
 param(
     [string]$QtRoot = "C:\Qt\6.8.0\msvc2022_64",
     [string]$BuildDir = "build",
-    [string]$OutputDirectory = "dist\PdfApp-windows"
+    [string]$OutputDirectory = "dist\PDF@home-windows"
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,7 +29,7 @@ try {
         throw "CMake Release build failed with exit code $LASTEXITCODE."
     }
 
-    $builtExe = Join-Path $BuildDir "Release\PdfApp.exe"
+    $builtExe = Join-Path $BuildDir "Release\PDF@home.exe"
     if (-not (Test-Path $builtExe -PathType Leaf)) {
         throw "The Release executable was not found at '$builtExe'."
     }
@@ -40,7 +40,7 @@ try {
     }
     New-Item -ItemType Directory -Path $stagePath | Out-Null
 
-    $stagedExe = Join-Path $stagePath "PdfApp.exe"
+    $stagedExe = Join-Path $stagePath "PDF@home.exe"
     Copy-Item $builtExe $stagedExe
     & $qtDeploy --release --compiler-runtime --no-translations --dir $stagePath $stagedExe
     if ($LASTEXITCODE -ne 0) {
@@ -71,7 +71,7 @@ provide the corresponding source/build materials required for the statically
 linked MuPDF build.
 "@ | Set-Content -Path (Join-Path $stagePath "DISTRIBUTION-NOTICE.txt") -Encoding UTF8
 
-    $archivePath = [System.IO.Path]::GetFullPath("dist\PdfApp-windows.zip")
+    $archivePath = [System.IO.Path]::GetFullPath("dist\PDF@home-windows.zip")
     New-Item -ItemType Directory -Path (Split-Path -Parent $archivePath) -Force | Out-Null
     Compress-Archive -Path (Join-Path $stagePath "*") -DestinationPath $archivePath -Force
 

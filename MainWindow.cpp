@@ -158,7 +158,8 @@ MainWindow::MainWindow(QWidget *parent)
     updateActions();
 
     setAcceptDrops(true);
-    setWindowTitle("PDF Reader");
+    setWindowIcon(qApp->windowIcon());
+    setWindowTitle("PDF@home");
     resize(900, 700);
 
     QSettings settings;
@@ -961,8 +962,8 @@ void MainWindow::updateRecentMenu()
 
 void MainWindow::showAbout()
 {
-    QMessageBox::about(this, "About PDF Reader",
-        "<h3>Offline PDF Reader/Editor</h3>"
+    QMessageBox::about(this, "About PDF@home",
+        "<h3>PDF@home</h3>"
         "<p>A desktop PDF reader and page editor built with Qt 6 and MuPDF.</p>"
         "<p>Copyright &copy; 2026 genecc04.<br>"
         "This program comes with ABSOLUTELY NO WARRANTY. It is free software, licensed "
@@ -1656,9 +1657,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
 void MainWindow::updateTitle()
 {
     if (m_displayName.isEmpty())
-        setWindowTitle("PDF Reader");
+        setWindowTitle("PDF@home");
     else
-        setWindowTitle(m_displayName + (isDocumentModified() ? " *" : "") + " - PDF Reader");
+        setWindowTitle(m_displayName + (isDocumentModified() ? " *" : "") + " - PDF@home");
 }
 
 void MainWindow::updateActions()

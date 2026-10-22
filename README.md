@@ -1,4 +1,4 @@
-# Offline PDF Reader/Editor
+# PDF@home
 
 A desktop PDF reader and editor for Windows, built with C++, Qt 6 and MuPDF.
 Everything happens on your computer: your files are never uploaded, and the app has no
@@ -39,11 +39,11 @@ network features.
 
 ## Download
 
-Get `PdfApp-windows.zip` from the
+Get `PDF@home-windows.zip` from the
 [Releases page](https://github.com/genecc04/offline-pdf-reader-editor/releases),
-unzip it anywhere, and run `PdfApp.exe`. No installer is needed.
+unzip it anywhere, and run `PDF@home.exe`. No installer is needed.
 
-**Keep all the files in the folder together.** `PdfApp.exe` needs the Qt libraries that
+**Keep all the files in the folder together.** `PDF@home.exe` needs the Qt libraries that
 come with it and does not run on its own.
 
 It also needs the
@@ -110,7 +110,7 @@ cmake --build build --config Debug
 powershell -ExecutionPolicy Bypass -File .\package.ps1
 ```
 
-This builds in Release mode and creates `dist/PdfApp-windows.zip` with the program,
+This builds in Release mode and creates `dist/PDF@home-windows.zip` with the program,
 the dynamically linked Qt runtime, and the repository's license materials. If needed,
 pass `-QtRoot` and `-BuildDir` to match your machine. The script does not bundle the
 complete Qt PDF third-party notice set or create the corresponding source materials
