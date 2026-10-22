@@ -86,8 +86,10 @@ which most computers already have.
 ## Building from source
 
 Requirements: CMake 3.21+, a C++17 compiler (developed with MSVC), Qt 6 with the
-Widgets, Pdf and PdfWidgets modules (developed with Qt 6.8.0), and
-[vcpkg](https://github.com/microsoft/vcpkg).
+Widgets, Pdf and PdfWidgets modules, and [vcpkg](https://github.com/microsoft/vcpkg).
+The development build was tested with Qt 6.8.0 for MSVC 2022 and MuPDF 1.26.10
+from vcpkg. QMake reports version 3.1 with that Qt installation; this project uses
+CMake to configure and build.
 
 Install MuPDF with vcpkg:
 
@@ -108,9 +110,13 @@ cmake --build build --config Debug
 powershell -ExecutionPolicy Bypass -File .\package.ps1
 ```
 
-This builds in Release mode and creates `dist/PdfApp-windows.zip` with the program, the
-Qt libraries it needs and the license files. Adjust the paths at the top of
-`package.ps1` to match your machine.
+This builds in Release mode and creates `dist/PdfApp-windows.zip` with the program,
+the dynamically linked Qt runtime, and the repository's license materials. If needed,
+pass `-QtRoot` and `-BuildDir` to match your machine. The script does not bundle the
+complete Qt PDF third-party notice set or create the corresponding source materials
+required for distributing the statically linked MuPDF build. Review
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and complete those release-specific
+steps before distributing the archive.
 
 ## Reporting problems
 
