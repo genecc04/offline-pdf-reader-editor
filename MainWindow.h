@@ -27,6 +27,7 @@ class MainWindow : public QMainWindow
 {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
     void openPath(const QString &path);
 
@@ -100,6 +101,7 @@ private:
     void updateActions();
     bool reopenEditor(const QString &path);
     void removeSnapshots(const QStringList &paths);
+    bool removeTempFile(const QString &path, bool reportFailure = false);
     bool isTempFile(const QString &path) const;
 
     

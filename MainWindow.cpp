@@ -10,6 +10,7 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDebug>
 #include <QDir>
 #include <QDockWidget>
 #include <QDragEnterEvent>
@@ -163,6 +164,46 @@ MainWindow::MainWindow(QWidget *parent)
     QSettings settings;
     restoreGeometry(settings.value("window/geometry").toByteArray());
     restoreState(settings.value("window/state").toByteArray());
+}
+
+MainWindow::~MainWindow()
+{
+    m_editor.reset();
+
+    if (m_view) {
+        m_view->setPageRenderDocument(nullptr);
+        m_view->setDocument(nullptr);
+    }
+    if (m_thumbnails) {
+        m_thumbnails->setPageRenderDocument(nullptr);
+        m_thumbnails->setDocument(nullptr);
+    }
+    if (m_searchDock) {
+        delete m_searchDock;
+        m_searchDock = nullptr;
+        m_search = nullptr;
+    }
+    if (m_bookmarks)
+        m_bookmarks->setDocument(nullptr);
+
+    if (m_pageRenderDocument) {
+        m_pageRenderDocument->close();
+        delete m_pageRenderDocument;
+        m_pageRenderDocument = nullptr;
+    }
+    if (m_document) {
+        m_document->close();
+        delete m_document;
+        m_document = nullptr;
+    }
+
+    if (!m_tempDir.isValid())
+        return;
+
+    const QFileInfoList files = QDir(m_tempDir.path()).entryInfoList(
+        QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot);
+    for (const QFileInfo &fileInfo : files)
+        removeTempFile(fileInfo.absoluteFilePath(), true);
 }
 
 void MainWindow::setupViewer()
@@ -1661,8 +1702,25 @@ void MainWindow::removeSnapshots(const QStringList &paths)
 {
     for (const QString &path : paths) {
         if (isTempFile(path))
-            QFile::remove(path);
+            removeTempFile(path);
     }
+}
+
+bool MainWindow::removeTempFile(const QString &path, bool reportFailure)
+{
+    QFile file(path);
+    if (!file.exists())
+        return true;
+
+    if (!file.setPermissions(file.permissions() | QFileDevice::WriteOwner)
+        || !file.remove()) {
+        if (reportFailure) {
+            qWarning().noquote() << "Could not remove temporary PDF snapshot"
+                                 << path << ":" << file.errorString();
+        }
+        return false;
+    }
+    return true;
 }
 
 bool MainWindow::isTempFile(const QString &path) const

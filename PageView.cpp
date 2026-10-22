@@ -85,7 +85,10 @@ PageView::PageView(QWidget *parent)
 void PageView::setDocument(QPdfDocument *document)
 {
     m_document = document;
-    connect(m_document, &QPdfDocument::statusChanged, this, [this]() { onDocumentChanged(); });
+    if (m_document) {
+        connect(m_document, &QPdfDocument::statusChanged, this,
+                [this]() { onDocumentChanged(); });
+    }
     onDocumentChanged();
 }
 

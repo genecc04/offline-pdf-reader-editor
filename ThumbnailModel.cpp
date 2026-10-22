@@ -41,8 +41,13 @@ ThumbnailModel::ThumbnailModel(QObject *parent)
 void ThumbnailModel::setDocument(QPdfDocument *document)
 {
     m_document = document;
-    if (!m_document)
+    if (!m_document) {
+        m_cache.clear();
+        m_renderQueue.clear();
+        m_queuedPages.clear();
+        m_renderTimer->stop();
         return;
+    }
 
     connect(m_document, &QPdfDocument::statusChanged, this, [this]() {
         beginResetModel();
