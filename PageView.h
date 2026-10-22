@@ -89,6 +89,7 @@ public:
     void setTextAnnotationHandler(
         const std::function<bool(int, const QPointF &, int *, QRectF *, QString *,
                                  TextStyle *)> &handler);
+    void refreshSelectedTextAnnotation();
     void editTextAnnotationInline(int page, int annotationId, const QString &text);
     void deleteSelectedTextAnnotation();
     void setFormFields(int page, const QVector<FormField> &fields);

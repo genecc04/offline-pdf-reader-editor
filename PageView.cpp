@@ -1200,6 +1200,26 @@ void PageView::editTextAnnotationInline(int page, int annotationId, const QStrin
                           text, m_selectedTextAnnotationStyle);
 }
 
+void PageView::refreshSelectedTextAnnotation()
+{
+    if (m_selectedTextAnnotationPage < 0)
+        return;
+
+    int annotationId = 0;
+    QRectF bounds;
+    QString text;
+    TextStyle style;
+    const QPointF center = m_selectedTextAnnotationBounds.center();
+    if (m_textAnnotationHandler
+        && m_textAnnotationHandler(m_selectedTextAnnotationPage, center,
+                                   &annotationId, &bounds, &text, &style)) {
+        selectTextAnnotation(m_selectedTextAnnotationPage, annotationId,
+                             bounds, text, style);
+    } else {
+        clearSelectedTextAnnotation();
+    }
+}
+
 void PageView::deleteSelectedTextAnnotation()
 {
     if (m_selectedTextAnnotationPage < 0)

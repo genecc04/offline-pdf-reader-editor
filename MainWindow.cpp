@@ -1169,6 +1169,7 @@ bool MainWindow::refreshAfterPageEdit(const QList<int> &changedPages, int page)
 
     removeSnapshots(m_history.push(newPath));
     reopenEditor(newPath);
+    m_view->refreshSelectedTextAnnotation();
     updateActions();
     updateTitle();
     return true;
