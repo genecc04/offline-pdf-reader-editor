@@ -32,6 +32,11 @@ public:
         int widgetIndex = -1;
     };
 
+    struct InkStroke {
+        QVector<QPointF> points;
+        double widthPoints = 1.0;
+    };
+
     PdfEditor();
     ~PdfEditor();
 
@@ -65,6 +70,7 @@ public:
     bool hasAnnotations();
     bool addInkStroke(int pageIndex, const QVector<QPointF> &points,
                     float red, float green, float blue, double width, double opacity);
+    bool inkStrokesOnPage(int pageIndex, QVector<InkStroke> *strokes);
     bool eraseInk(int pageIndex, const QVector<QPointF> &path, double radius,
                   int *annotationsRemoved = nullptr);
     bool addImageStamp(int pageIndex, const QRectF &box, const QByteArray &imageData);

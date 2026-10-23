@@ -28,7 +28,7 @@ network features.
 **Marking up and filling out**
 - Fill out forms: type text into the blanks, draw check marks, and add your signature
 - Add editable PDF text annotations with size and color controls.
-- Draw with a pen, a highlighter or white-out, with adjustable size, color and opacity
+- Draw with a pen, a highlighter or white-out, with adjustable size, color and opacity.
 - Highlight every occurrence of a word or phrase
 - Add images and signatures. Pick a file and click the page. Use Crop in the image
   toolbar and drag a corner handle inward to crop; switch Crop off to move or resize.

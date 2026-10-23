@@ -4,6 +4,7 @@
 #include <QUuid>
 #include <vector>
 #include <cstring>
+#include <utility>
 
 extern "C" {
 #include <mupdf/fitz.h>
@@ -914,6 +915,66 @@ bool PdfEditor::addInkStroke(int pageIndex, const QVector<QPointF> &points,
         m_error = QString::fromUtf8(fz_caught_message(m_ctx));
         return false;
     }
+    return true;
+}
+
+bool PdfEditor::inkStrokesOnPage(int pageIndex, QVector<InkStroke> *strokes)
+{
+    m_error.clear();
+    if (!m_doc) {
+        m_error = "No document is open.";
+        return false;
+    }
+    if (!strokes) {
+        m_error = "No ink stroke result was provided.";
+        return false;
+    }
+
+    QVector<InkStroke> result;
+    pdf_page *page = nullptr;
+    fz_var(page);
+    fz_try(m_ctx)
+    {
+        const int count = pdf_count_pages(m_ctx, m_doc);
+        if (pageIndex < 0 || pageIndex >= count)
+            fz_throw(m_ctx, FZ_ERROR_GENERIC, "That page does not exist.");
+
+        page = pdf_load_page(m_ctx, m_doc, pageIndex);
+        for (pdf_annot *annot = pdf_first_annot(m_ctx, page); annot;
+             annot = pdf_next_annot(m_ctx, annot)) {
+            if (pdf_annot_type(m_ctx, annot) != PDF_ANNOT_INK)
+                continue;
+
+            const double width = qMax(0.0, double(pdf_annot_border_width(m_ctx, annot)));
+            const int strokeCount = pdf_annot_ink_list_count(m_ctx, annot);
+            for (int strokeIndex = 0; strokeIndex < strokeCount; ++strokeIndex) {
+                InkStroke stroke;
+                stroke.widthPoints = width;
+                const int vertexCount = pdf_annot_ink_list_stroke_count(
+                    m_ctx, annot, strokeIndex);
+                stroke.points.reserve(vertexCount);
+                for (int vertex = 0; vertex < vertexCount; ++vertex) {
+                    const fz_point point = pdf_annot_ink_list_stroke_vertex(
+                        m_ctx, annot, strokeIndex, vertex);
+                    stroke.points.append(QPointF(point.x, point.y));
+                }
+                if (!stroke.points.isEmpty())
+                    result.append(std::move(stroke));
+            }
+        }
+    }
+    fz_always(m_ctx)
+    {
+        if (page)
+            fz_drop_page(m_ctx, &page->super);
+    }
+    fz_catch(m_ctx)
+    {
+        m_error = QString::fromUtf8(fz_caught_message(m_ctx));
+        return false;
+    }
+
+    *strokes = std::move(result);
     return true;
 }
 

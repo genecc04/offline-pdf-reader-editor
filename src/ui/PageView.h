@@ -101,6 +101,8 @@ public:
     void setDrawToolActive(bool active);
     void setDrawStyle(const DrawStyle &style);
     void setEraserActive(bool active);
+    void setInkStrokeHandler(
+        const std::function<bool(int, QVector<Stroke> *)> &handler);
     bool hasPendingStrokes() const { return !m_strokes.isEmpty(); }
     bool undoLastStroke();
 
@@ -151,6 +153,12 @@ protected:
 private:
     enum class ImageDrag { None, Move, Resize };
 
+    struct ErasePreviewStroke {
+        Stroke stroke;
+        QRectF bounds;
+        bool erased = false;
+    };
+
     struct SelectionPart {
         int page = -1;
         QList<QPolygonF> bounds;
@@ -170,7 +178,9 @@ private:
     int nearestPage(const QPoint &viewportPos) const;
     QRect pageRectInViewport(int page) const;
     QPointF pagePointFor(int page, const QPoint &viewportPos) const;
-    QPixmap pageImage(int page, const QSize &size, qreal dpr);
+    QPixmap pageImage(int page, const QSize &size, qreal dpr,
+                      bool includeAnnotations = true);
+    bool updateErasePreview(const QPointF &start, const QPointF &end);
     void drawSearchResults(QPainter &painter, int page, const QRect &pageRect,
                            const QPdfLink &current);
     void drawFormFieldOverlays(QPainter &painter, int page, const QRect &pageRect);
@@ -222,6 +232,7 @@ private:
     bool m_jumping = false;
 
     QCache<quint64, QPixmap> m_cache;
+    QCache<quint64, QPixmap> m_baseCache;
 
     // text tool
     bool m_textTool = false;
@@ -245,7 +256,9 @@ private:
     int m_erasePage = -1;
     QPoint m_eraserCursorPos;
     QVector<QPointF> m_erasePoints;
+    QVector<ErasePreviewStroke> m_erasePreviewStrokes;
     DrawStyle m_drawStyle;
+    std::function<bool(int, QVector<Stroke> *)> m_inkStrokeHandler;
     Stroke m_activeStroke;
     QVector<Stroke> m_strokes;
 

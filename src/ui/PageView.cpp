@@ -14,6 +14,8 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPainterPathStroker>
 #include <QPdfDocument>
 #include <QPdfDocumentRenderOptions>
 #include <QPdfLink>
@@ -36,11 +38,72 @@ constexpr int kMargin = 12;
 constexpr int kSpacing = 12;
 constexpr double kMinZoom = 0.1;
 constexpr double kMaxZoom = 8.0;
+
+double pointSegmentDistanceSquared(const QPointF &point, const QPointF &start,
+                                   const QPointF &end)
+{
+    const QPointF segment = end - start;
+    const double lengthSquared = QPointF::dotProduct(segment, segment);
+    if (lengthSquared == 0.0) {
+        const QPointF delta = point - start;
+        return QPointF::dotProduct(delta, delta);
+    }
+
+    const double projection = qBound(
+        0.0, QPointF::dotProduct(point - start, segment) / lengthSquared, 1.0);
+    const QPointF delta = point - (start + segment * projection);
+    return QPointF::dotProduct(delta, delta);
+}
+
+double crossProduct(const QPointF &a, const QPointF &b, const QPointF &c)
+{
+    return (b.x() - a.x()) * (c.y() - a.y())
+           - (b.y() - a.y()) * (c.x() - a.x());
+}
+
+bool pointOnSegment(const QPointF &point, const QPointF &start, const QPointF &end)
+{
+    constexpr double epsilon = 1e-9;
+    return qAbs(crossProduct(start, end, point)) <= epsilon
+           && point.x() >= qMin(start.x(), end.x()) - epsilon
+           && point.x() <= qMax(start.x(), end.x()) + epsilon
+           && point.y() >= qMin(start.y(), end.y()) - epsilon
+           && point.y() <= qMax(start.y(), end.y()) + epsilon;
+}
+
+bool segmentsIntersect(const QPointF &a, const QPointF &b,
+                       const QPointF &c, const QPointF &d)
+{
+    const double abC = crossProduct(a, b, c);
+    const double abD = crossProduct(a, b, d);
+    const double cdA = crossProduct(c, d, a);
+    const double cdB = crossProduct(c, d, b);
+    if (((abC > 0.0 && abD < 0.0) || (abC < 0.0 && abD > 0.0))
+        && ((cdA > 0.0 && cdB < 0.0) || (cdA < 0.0 && cdB > 0.0)))
+        return true;
+    return (abC == 0.0 && pointOnSegment(c, a, b))
+           || (abD == 0.0 && pointOnSegment(d, a, b))
+           || (cdA == 0.0 && pointOnSegment(a, c, d))
+           || (cdB == 0.0 && pointOnSegment(b, c, d));
+}
+
+double segmentDistanceSquared(const QPointF &a, const QPointF &b,
+                              const QPointF &c, const QPointF &d)
+{
+    if (segmentsIntersect(a, b, c, d))
+        return 0.0;
+
+    return qMin(qMin(pointSegmentDistanceSquared(a, c, d),
+                     pointSegmentDistanceSquared(b, c, d)),
+                qMin(pointSegmentDistanceSquared(c, a, b),
+                     pointSegmentDistanceSquared(d, a, b)));
+}
 }
 
 PageView::PageView(QWidget *parent)
     : QAbstractScrollArea(parent)
     , m_cache(256 * 1024)
+    , m_baseCache(64 * 1024)
 {
     setFocusPolicy(Qt::StrongFocus);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
@@ -98,6 +161,7 @@ void PageView::setPageRenderDocument(QPdfDocument *document,
     m_pageRenderDocument = document;
     if (changedPages.isEmpty()) {
         m_cache.clear();
+        m_baseCache.clear();
         viewport()->update();
         return;
     }
@@ -106,6 +170,11 @@ void PageView::setPageRenderDocument(QPdfDocument *document,
     for (quint64 key : keys) {
         if (changedPages.contains(int(key >> 40)))
             m_cache.remove(key);
+    }
+    const QList<quint64> baseKeys = m_baseCache.keys();
+    for (quint64 key : baseKeys) {
+        if (changedPages.contains(int(key >> 40)))
+            m_baseCache.remove(key);
     }
 
     const QPoint offset(horizontalScrollBar()->value(), verticalScrollBar()->value());
@@ -132,6 +201,7 @@ void PageView::onDocumentChanged()
     m_erasing = false;
     m_erasePage = -1;
     m_erasePoints.clear();
+    m_erasePreviewStrokes.clear();
 
     const bool hadStrokes = !m_strokes.isEmpty();
     m_strokes.clear();
@@ -141,6 +211,7 @@ void PageView::onDocumentChanged()
         emit pendingStrokesChanged();
 
     m_cache.clear();
+    m_baseCache.clear();
     m_pageSizes.clear();
 
     if (m_document && m_document->status() == QPdfDocument::Status::Ready) {
@@ -484,15 +555,21 @@ void PageView::drawFormFieldOverlays(QPainter &painter, int page, const QRect &p
 
 // painting
 
-QPixmap PageView::pageImage(int page, const QSize &size, qreal dpr)
+QPixmap PageView::pageImage(int page, const QSize &size, qreal dpr,
+                            bool includeAnnotations)
 {
     const quint64 key = (quint64(page) << 40) | (quint64(size.width()) << 20)
                         | quint64(size.height());
-    if (QPixmap *cached = m_cache.object(key))
+    QCache<quint64, QPixmap> &cache = includeAnnotations ? m_cache : m_baseCache;
+    if (QPixmap *cached = cache.object(key))
         return *cached;
 
     QPdfDocumentRenderOptions options;
-    options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
+    if (includeAnnotations) {
+        options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
+    } else {
+        options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlags());
+    }
     QPdfDocument *source = m_pageRenderDocument
                                    && m_pageRenderDocument->status() == QPdfDocument::Status::Ready
                                ? m_pageRenderDocument
@@ -501,7 +578,7 @@ QPixmap PageView::pageImage(int page, const QSize &size, qreal dpr)
 
     QPixmap pixmap = QPixmap::fromImage(image);
     pixmap.setDevicePixelRatio(dpr);
-    m_cache.insert(key, new QPixmap(pixmap), pixmap.width() * pixmap.height() * 4 / 1024);
+    cache.insert(key, new QPixmap(pixmap), pixmap.width() * pixmap.height() * 4 / 1024);
     return pixmap;
 }
 
@@ -582,7 +659,42 @@ void PageView::paintEvent(QPaintEvent *event)
 
         const QRect target = r.translated(-offset);
         painter.fillRect(target, Qt::white);
-        painter.drawPixmap(target.topLeft(), pageImage(page, target.size(), dpr));
+        QPixmap renderedPage = pageImage(page, target.size(), dpr);
+        if (m_erasing && m_erasePage == page) {
+            QPainterPath erasedInk;
+            for (const ErasePreviewStroke &preview : std::as_const(m_erasePreviewStrokes)) {
+                if (!preview.erased || preview.stroke.points.isEmpty())
+                    continue;
+
+                QPainterPath strokePath;
+                const QPointF &first = preview.stroke.points.first();
+                strokePath.moveTo(first.x() * m_scale, first.y() * m_scale);
+                for (int i = 1; i < preview.stroke.points.size(); ++i) {
+                    const QPointF &point = preview.stroke.points.at(i);
+                    strokePath.lineTo(point.x() * m_scale, point.y() * m_scale);
+                }
+
+                const qreal width = qMax(0.1, preview.stroke.style.widthPoints * m_scale);
+                if (preview.stroke.points.size() == 1) {
+                    const QPointF point = strokePath.currentPosition();
+                    erasedInk.addEllipse(point, width / 2.0, width / 2.0);
+                } else {
+                    QPainterPathStroker stroker;
+                    stroker.setWidth(width);
+                    stroker.setCapStyle(Qt::RoundCap);
+                    stroker.setJoinStyle(Qt::RoundJoin);
+                    erasedInk.addPath(stroker.createStroke(strokePath));
+                }
+            }
+            if (!erasedInk.isEmpty()) {
+                QPainter pagePainter(&renderedPage);
+                pagePainter.setCompositionMode(QPainter::CompositionMode_Source);
+                pagePainter.setClipPath(erasedInk);
+                pagePainter.drawPixmap(
+                    QPoint(0, 0), pageImage(page, target.size(), dpr, false));
+            }
+        }
+        painter.drawPixmap(target.topLeft(), renderedPage);
         drawSearchResults(painter, page, target, current);
         drawFormFieldOverlays(painter, page, target);
 
@@ -624,6 +736,18 @@ void PageView::paintEvent(QPaintEvent *event)
             for (const QPointF &corner : corners)
                 painter.drawRect(QRectF(corner.x() - 4, corner.y() - 4, 8, 8));
             painter.restore();
+
+            if (m_movingTextAnnotation || m_resizingTextAnnotation) {
+                QFont font(m_selectedTextAnnotationStyle.family);
+                font.setPixelSize(qMax(
+                    1, qRound(m_selectedTextAnnotationStyle.sizePoints * m_scale)));
+                painter.save();
+                painter.setFont(font);
+                painter.setPen(m_selectedTextAnnotationStyle.color);
+                painter.drawText(bounds, Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                                 m_selectedTextAnnotationContents);
+                painter.restore();
+            }
         }
 
         for (const Stroke &stroke : std::as_const(m_strokes)) {
@@ -891,9 +1015,49 @@ void PageView::setEraserActive(bool active)
     m_eraserActive = active;
     m_erasing = false;
     m_erasePoints.clear();
+    m_erasePreviewStrokes.clear();
     m_erasePage = -1;
     viewport()->setCursor(m_drawTool ? Qt::CrossCursor : Qt::ArrowCursor);
     viewport()->update();
+}
+
+void PageView::setInkStrokeHandler(
+    const std::function<bool(int, QVector<Stroke> *)> &handler)
+{
+    m_inkStrokeHandler = handler;
+}
+
+bool PageView::updateErasePreview(const QPointF &start, const QPointF &end)
+{
+    bool erasedAny = false;
+    const QRectF eraserBounds = QRectF(start, end).normalized();
+    const double eraserRadius = m_drawStyle.widthPoints / 2.0;
+    for (ErasePreviewStroke &preview : m_erasePreviewStrokes) {
+        if (preview.erased)
+            continue;
+        const double hitRadius = eraserRadius + preview.stroke.style.widthPoints / 2.0;
+        if (!preview.bounds.intersects(
+                eraserBounds.adjusted(-hitRadius, -hitRadius, hitRadius, hitRadius)))
+            continue;
+
+        const double hitRadiusSquared = hitRadius * hitRadius;
+        const QVector<QPointF> &points = preview.stroke.points;
+        if (points.size() == 1) {
+            preview.erased = pointSegmentDistanceSquared(
+                points.first(), start, end) <= hitRadiusSquared;
+        } else {
+            for (int i = 1; i < points.size(); ++i) {
+                if (segmentDistanceSquared(start, end, points.at(i - 1), points.at(i))
+                    <= hitRadiusSquared) {
+                    preview.erased = true;
+                    break;
+                }
+            }
+        }
+        if (preview.erased)
+            erasedAny = true;
+    }
+    return erasedAny;
 }
 
 void PageView::setDrawStyle(const DrawStyle &style)
@@ -1434,8 +1598,41 @@ void PageView::mousePressEvent(QMouseEvent *event)
                 m_erasePage = page;
                 m_eraserCursorPos = pos;
                 m_erasePoints.clear();
-                m_erasePoints << pagePointFor(page, pos);
-                viewport()->update();
+                const QPointF point = pagePointFor(page, pos);
+                m_erasePoints << point;
+                m_erasePreviewStrokes.clear();
+                if (m_inkStrokeHandler) {
+                    QVector<Stroke> strokes;
+                    if (m_inkStrokeHandler(page, &strokes)) {
+                        m_erasePreviewStrokes.reserve(strokes.size());
+                        for (Stroke &stroke : strokes) {
+                            ErasePreviewStroke preview;
+                            preview.stroke = std::move(stroke);
+                            if (!preview.stroke.points.isEmpty()) {
+                                qreal minX = preview.stroke.points.first().x();
+                                qreal maxX = minX;
+                                qreal minY = preview.stroke.points.first().y();
+                                qreal maxY = minY;
+                                for (const QPointF &strokePoint : preview.stroke.points) {
+                                    minX = qMin(minX, strokePoint.x());
+                                    maxX = qMax(maxX, strokePoint.x());
+                                    minY = qMin(minY, strokePoint.y());
+                                    maxY = qMax(maxY, strokePoint.y());
+                                }
+                                preview.bounds.setCoords(minX, minY, maxX, maxY);
+                                const double halfWidth =
+                                    preview.stroke.style.widthPoints / 2.0;
+                                preview.bounds.adjust(-halfWidth, -halfWidth,
+                                                      halfWidth, halfWidth);
+                            }
+                            m_erasePreviewStrokes.append(std::move(preview));
+                        }
+                    }
+                }
+                if (updateErasePreview(point, point))
+                    viewport()->repaint(pageRectInViewport(page));
+                else
+                    viewport()->update();
             }
             return;
         }
@@ -1650,8 +1847,14 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
         m_eraserCursorPos = pos;
         if (m_erasing) {
             const QPointF point = pagePointFor(m_erasePage, pos);
-            if (QLineF(m_erasePoints.last(), point).length() * m_scale >= 1.5)
+            const QPointF previous = m_erasePoints.last();
+            if (point != previous) {
                 m_erasePoints << point;
+                if (updateErasePreview(previous, point)) {
+                    viewport()->repaint(pageRectInViewport(m_erasePage));
+                    return;
+                }
+            }
         } else {
             m_erasePage = pageAtViewportPoint(pos);
         }
@@ -1726,6 +1929,7 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
         const double radius = m_drawStyle.widthPoints / 2.0;
         m_erasing = false;
         m_erasePoints.clear();
+        m_erasePreviewStrokes.clear();
         viewport()->update();
         if (!path.isEmpty())
             emit eraseRequested(page, path, radius);

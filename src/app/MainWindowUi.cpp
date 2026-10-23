@@ -16,10 +16,13 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QPdfDocument>
+#include <QMessageBox>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QToolBar>
+
+#include <utility>
 
 void MainWindow::setupViewer()
 {
@@ -111,6 +114,28 @@ void MainWindow::setupViewer()
                     : QStringLiteral("Helvetica");
             style->sizePoints = fontSize;
             style->color = color;
+            return true;
+        });
+    m_view->setInkStrokeHandler(
+        [this](int page, QVector<PageView::Stroke> *strokes) {
+            if (!m_editor)
+                return false;
+
+            QVector<PdfEditor::InkStroke> inkStrokes;
+            if (!m_editor->inkStrokesOnPage(page, &inkStrokes)) {
+                QMessageBox::warning(this, "Erase failed", m_editor->lastError());
+                return false;
+            }
+
+            strokes->clear();
+            strokes->reserve(inkStrokes.size());
+            for (PdfEditor::InkStroke &inkStroke : inkStrokes) {
+                PageView::Stroke stroke;
+                stroke.page = page;
+                stroke.points = std::move(inkStroke.points);
+                stroke.style.widthPoints = inkStroke.widthPoints;
+                strokes->append(std::move(stroke));
+            }
             return true;
         });
     connect(m_view, &PageView::openRequested, this, &MainWindow::openFile);
@@ -254,7 +279,7 @@ void MainWindow::setupMenus()
         m_view->setDrawToolActive(on);
         if (on) {
             statusBar()->showMessage(
-                "Draw strokes or erase existing Ink strokes. The eraser does not affect "
+                "Draw strokes or erase existing Ink strokes on contact. The eraser does not affect "
                 "highlights or images. Ctrl+Z removes your last pending stroke. "
                 "Turn Draw off to add everything to the document.", 10000);
         }
