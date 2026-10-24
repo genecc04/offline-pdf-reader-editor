@@ -19,6 +19,7 @@
 #include <QPdfDocument>
 #include <QPdfDocumentRenderOptions>
 #include <QPdfLink>
+#include <QPdfLinkModel>
 #include <QPdfSearchModel>
 #include <QPdfSelection>
 #include <QPlainTextEdit>
@@ -111,6 +112,8 @@ PageView::PageView(QWidget *parent)
     horizontalScrollBar()->setSingleStep(30);
     verticalScrollBar()->setSingleStep(40);
     viewport()->setMouseTracking(true);
+    viewport()->installEventFilter(this);
+    m_linkModel = new QPdfLinkModel(this);
 
     m_emptyStateOpenButton = new QPushButton("Open a PDF...", viewport());
     m_emptyStateOpenButton->setObjectName(QStringLiteral("emptyStateOpenButton"));
@@ -149,6 +152,7 @@ PageView::PageView(QWidget *parent)
 void PageView::setDocument(QPdfDocument *document)
 {
     m_document = document;
+    m_linkModel->setDocument(document);
     if (m_document) {
         connect(m_document, &QPdfDocument::statusChanged, this,
                 [this]() { onDocumentChanged(); });
@@ -196,6 +200,11 @@ void PageView::onDocumentChanged()
 
     clearSelectedTextAnnotation();
     m_selecting = false;
+    m_pressedLinkPage = -1;
+    m_pressedLinkUrl = QUrl();
+    m_pressedLinkDestinationPage = -1;
+    m_pressedLinkLocation = QPointF();
+    setHoveredLink(QUrl());
     m_selection.clear();
     m_selStartPage = -1;
     m_selEndPage = -1;
@@ -214,10 +223,14 @@ void PageView::onDocumentChanged()
     m_cache.clear();
     m_baseCache.clear();
     m_pageSizes.clear();
+    m_pageLinks.clear();
+    m_pageLinksLoaded.clear();
 
     if (m_document && m_document->status() == QPdfDocument::Status::Ready) {
         const int count = m_document->pageCount();
         m_pageSizes.reserve(count);
+        m_pageLinks.resize(count);
+        m_pageLinksLoaded.fill(false, count);
         for (int i = 0; i < count; ++i)
             m_pageSizes.append(m_document->pagePointSize(i));
     }
@@ -389,6 +402,56 @@ int PageView::pageAtViewportPoint(const QPoint &point) const
             return i;
     }
     return -1;
+}
+
+const QList<QPdfLink> &PageView::linksOnPage(int page)
+{
+    static const QList<QPdfLink> emptyLinks;
+    if (!m_linkModel || page < 0 || page >= m_pageLinks.size())
+        return emptyLinks;
+    if (m_pageLinksLoaded.at(page))
+        return m_pageLinks.at(page);
+
+    m_linkModel->setPage(page);
+    QList<QPdfLink> &links = m_pageLinks[page];
+    const int linkCount = m_linkModel->rowCount(QModelIndex());
+    links.reserve(linkCount);
+    for (int row = 0; row < linkCount; ++row) {
+        links.append(m_linkModel->data(
+            m_linkModel->index(row, 0),
+            int(QPdfLinkModel::Role::Link)).value<QPdfLink>());
+    }
+    m_pageLinksLoaded[page] = true;
+    return links;
+}
+
+QPdfLink PageView::linkAtViewportPoint(const QPoint &point)
+{
+    const int page = pageAtViewportPoint(point);
+    if (page < 0)
+        return QPdfLink();
+
+    const QPointF pagePoint = pagePointFor(page, point);
+    for (const QPdfLink &link : linksOnPage(page)) {
+        for (const QRectF &rect : link.rectangles()) {
+            if (rect.contains(pagePoint))
+                return link;
+        }
+    }
+    return QPdfLink();
+}
+
+void PageView::setHoveredLink(const QUrl &url)
+{
+    const QString scheme = url.scheme().toLower();
+    const QUrl websiteUrl = scheme == QLatin1String("http")
+                                || scheme == QLatin1String("https")
+        ? url : QUrl();
+    if (websiteUrl == m_hoveredLinkUrl)
+        return;
+
+    m_hoveredLinkUrl = websiteUrl;
+    emit linkHovered(websiteUrl);
 }
 
 int PageView::nearestPage(const QPoint &viewportPos) const
@@ -1779,6 +1842,17 @@ void PageView::mousePressEvent(QMouseEvent *event)
                 return;
             }
         }
+        const QPdfLink link = page >= 0 ? linkAtViewportPoint(pos) : QPdfLink();
+        if (link.isValid() || !link.url().isEmpty()) {
+            m_pressedLinkPage = page;
+            m_linkPressPos = pos;
+            m_pressedLinkUrl = link.url();
+            m_pressedLinkDestinationPage = link.page();
+            m_pressedLinkLocation = link.location();
+            event->accept();
+            return;
+        }
+
         const bool extending = page >= 0 && (event->modifiers() & Qt::ShiftModifier)
                                && !m_selection.isEmpty() && m_selStartPage >= 0;
         if (!extending)
@@ -1834,6 +1908,16 @@ void PageView::mouseDoubleClickEvent(QMouseEvent *event)
 void PageView::mouseMoveEvent(QMouseEvent *event)
 {
     const QPoint pos = event->position().toPoint();
+    const QPdfLink hoveredLink = linkAtViewportPoint(pos);
+    const bool overLink = hoveredLink.isValid() || !hoveredLink.url().isEmpty();
+    setHoveredLink(overLink ? hoveredLink.url() : QUrl());
+
+    if (m_pressedLinkPage >= 0) {
+        if ((pos - m_linkPressPos).manhattanLength() >= QApplication::startDragDistance())
+            m_pressedLinkPage = -1;
+        else
+            return;
+    }
 
     if (m_resizingTextAnnotation) {
         const QPointF point = pagePointFor(m_selectedTextAnnotationPage, pos);
@@ -1981,8 +2065,10 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
         } else if (selectedTextAnnotationViewportBounds().contains(QPointF(pos))) {
             viewport()->setCursor(Qt::SizeAllCursor);
         } else {
-            viewport()->setCursor(pageAtViewportPoint(pos) >= 0
-                                      ? Qt::IBeamCursor : Qt::ArrowCursor);
+            viewport()->setCursor(overLink
+                                      ? Qt::PointingHandCursor
+                                      : pageAtViewportPoint(pos) >= 0
+                                            ? Qt::IBeamCursor : Qt::ArrowCursor);
         }
     }
     QAbstractScrollArea::mouseMoveEvent(event);
@@ -1990,6 +2076,28 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
 
 void PageView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_pressedLinkPage >= 0 && event->button() == Qt::LeftButton) {
+        const int pressedPage = m_pressedLinkPage;
+        const QUrl pressedUrl = m_pressedLinkUrl;
+        const int destinationPage = m_pressedLinkDestinationPage;
+        const QPointF destinationLocation = m_pressedLinkLocation;
+        m_pressedLinkPage = -1;
+        m_pressedLinkUrl = QUrl();
+        m_pressedLinkDestinationPage = -1;
+        m_pressedLinkLocation = QPointF();
+
+        const int releasePage = pageAtViewportPoint(event->position().toPoint());
+        if (releasePage == pressedPage) {
+            if (!pressedUrl.isEmpty())
+                emit externalLinkRequested(pressedUrl);
+            else if (destinationPage >= 0)
+                jumpToPage(destinationPage, destinationLocation);
+        }
+        viewport()->setCursor(Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+
     if (m_movingTextAnnotation && event->button() == Qt::LeftButton) {
         m_movingTextAnnotation = false;
         viewport()->setCursor(Qt::ArrowCursor);
@@ -2344,6 +2452,9 @@ QString PageView::formEditorValue() const
 
 bool PageView::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == viewport() && event->type() == QEvent::Leave)
+        setHoveredLink(QUrl());
+
     if (m_formEditor
         && (watched == m_formEditor
             || (m_formChoiceEditor && watched == m_formChoiceEditor->lineEdit()))) {

@@ -12,11 +12,13 @@
 #include <QSize>
 #include <QSizeF>
 #include <QString>
+#include <QUrl>
 #include <QVector>
 #include <functional>
 
 class QPdfDocument;
 class QPdfLink;
+class QPdfLinkModel;
 class QPdfSearchModel;
 class QComboBox;
 class QLineEdit;
@@ -136,6 +138,8 @@ signals:
     void imageCropModeChanged(bool active);
     void textSelected();
     void openRequested();
+    void externalLinkRequested(const QUrl &url);
+    void linkHovered(const QUrl &url);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -175,6 +179,9 @@ private:
     void positionEmptyStateButton();
     void updateCurrentPage();
     int pageAtViewportPoint(const QPoint &point) const;
+    const QList<QPdfLink> &linksOnPage(int page);
+    QPdfLink linkAtViewportPoint(const QPoint &point);
+    void setHoveredLink(const QUrl &url);
     int nearestPage(const QPoint &viewportPos) const;
     QRect pageRectInViewport(int page) const;
     QPointF pagePointFor(int page, const QPoint &viewportPos) const;
@@ -219,6 +226,9 @@ private:
 
     QPdfDocument *m_document = nullptr;
     QPdfDocument *m_pageRenderDocument = nullptr;
+    QPdfLinkModel *m_linkModel = nullptr;
+    QVector<QList<QPdfLink>> m_pageLinks;
+    QVector<bool> m_pageLinksLoaded;
     QPdfSearchModel *m_search = nullptr;
     QPushButton *m_emptyStateOpenButton = nullptr;
     int m_searchIndex = -1;
@@ -231,6 +241,12 @@ private:
     QSize m_documentSize;
     int m_currentPage = 0;
     bool m_jumping = false;
+    int m_pressedLinkPage = -1;
+    QPoint m_linkPressPos;
+    QUrl m_pressedLinkUrl;
+    int m_pressedLinkDestinationPage = -1;
+    QPointF m_pressedLinkLocation;
+    QUrl m_hoveredLinkUrl;
 
     QCache<quint64, QPixmap> m_cache;
     QCache<quint64, QPixmap> m_baseCache;

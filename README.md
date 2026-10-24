@@ -1,8 +1,8 @@
 # PDF@home
 
 A desktop PDF reader and editor for Windows, built with C++, Qt 6 and MuPDF.
-Everything happens on your computer: your files are never uploaded, and the app has no
-network features.
+Everything happens on your computer: your files are never uploaded. The app only opens
+web links embedded in a PDF in your default browser after you confirm.
 
 ## Features
 
@@ -36,6 +36,7 @@ network features.
 
 **Security**
 - Add, change or remove a password (AES-256)
+- Preview website link URLs in the status bar; open links only after confirming
 
 ## Download
 
@@ -76,7 +77,6 @@ which most computers already have.
   copy still find it. Don't use it to hide anything sensitive.
 - Added text uses only the standard PDF fonts Helvetica, Times, and Courier for
   cross-viewer compatibility.
-- Links inside PDFs are not clickable yet.
 - Scanned PDFs have no text to select or search (there is no OCR).
 - Inserting pages from a password-protected PDF is not supported.
 - Bookmarks are not updated after you delete or reorder pages.

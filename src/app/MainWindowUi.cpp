@@ -12,6 +12,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QDesktopServices>
 #include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
@@ -19,10 +20,12 @@
 #include <QMenuBar>
 #include <QPdfDocument>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QToolBar>
+#include <QUrl>
 
 #include <utility>
 
@@ -147,6 +150,43 @@ void MainWindow::setupViewer()
             return true;
         });
     connect(m_view, &PageView::openRequested, this, &MainWindow::openFile);
+    connect(m_view, &PageView::linkHovered, this, [this](const QUrl &url) {
+        if (url.isEmpty())
+            statusBar()->clearMessage();
+        else
+            statusBar()->showMessage(url.toDisplayString());
+    });
+    connect(m_view, &PageView::externalLinkRequested, this, [this](const QUrl &url) {
+        const QString scheme = url.scheme().toLower();
+        if (!url.isValid() || url.host().isEmpty()
+            || (scheme != QLatin1String("http") && scheme != QLatin1String("https"))) {
+            QMessageBox::warning(
+                this, "Link not opened",
+                "Only valid HTTP and HTTPS website links can be opened.");
+            return;
+        }
+
+        QMessageBox confirmation(QMessageBox::Question, "Open website",
+                                 "Do you want to go to this site?\n\n"
+                                     + url.toDisplayString(QUrl::RemovePassword),
+                                 QMessageBox::NoButton, this);
+        confirmation.setTextFormat(Qt::PlainText);
+        QPushButton *proceed = confirmation.addButton(
+            "Proceed", QMessageBox::AcceptRole);
+        QPushButton *cancel = confirmation.addButton(
+            QMessageBox::Cancel);
+        confirmation.setDefaultButton(cancel);
+        confirmation.setEscapeButton(cancel);
+        confirmation.exec();
+        if (confirmation.clickedButton() != proceed)
+            return;
+
+        if (!QDesktopServices::openUrl(url)) {
+            QMessageBox::warning(
+                this, "Could not open website",
+                "Windows could not open the link in your default browser.");
+        }
+    });
 }
 
 void MainWindow::setupThumbnailPane()
