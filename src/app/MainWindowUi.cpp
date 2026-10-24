@@ -139,9 +139,6 @@ void MainWindow::setupViewer()
             return true;
         });
     connect(m_view, &PageView::openRequested, this, &MainWindow::openFile);
-    connect(m_view, &PageView::textSelected, this, [this]() {
-        statusBar()->showMessage("Text selected: press Ctrl+C or right-click to copy it.", 5000);
-    });
 }
 
 void MainWindow::setupThumbnailPane()

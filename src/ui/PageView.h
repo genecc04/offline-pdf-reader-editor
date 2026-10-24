@@ -210,6 +210,7 @@ private:
 
     void updateSelection();
     void extendSelection(const QPoint &viewportPos);
+    void selectWordAt(int page, const QPointF &point);
     void selectTextAnnotation(int page, int annotationId, const QRectF &bounds,
                               const QString &text, const TextStyle &style);
     void clearSelectedTextAnnotation();

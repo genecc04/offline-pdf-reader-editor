@@ -31,6 +31,7 @@
 #include <QWheelEvent>
 #include <QtMath>
 
+#include <limits>
 #include <utility>
 
 namespace {
@@ -904,6 +905,92 @@ void PageView::extendSelection(const QPoint &viewportPos)
     viewport()->update();
 }
 
+void PageView::selectWordAt(int page, const QPointF &point)
+{
+    if (!m_document || page < 0 || page >= m_pageSizes.size())
+        return;
+
+    const QSizeF pageSize = m_pageSizes.at(page);
+    const qreal radius = qMax(1.0, 2.0 / m_scale);
+    const QPdfSelection nearby = m_document->getSelection(
+        page, QPointF(qMax(0.0, point.x() - radius), point.y()),
+        QPointF(qMin(pageSize.width(), point.x() + radius), point.y()));
+    if (!nearby.isValid() || nearby.text().isEmpty())
+        return;
+    int wordIndex = -1;
+    qreal nearestDistance = std::numeric_limits<qreal>::max();
+    for (int offset = 0; offset < nearby.text().size(); ++offset) {
+        const int index = nearby.startIndex() + offset;
+        const QPdfSelection character = m_document->getSelectionAtIndex(page, index, 1);
+        for (const QPolygonF &polygon : character.bounds()) {
+            const QRectF bounds = polygon.boundingRect();
+            const qreal dx = qMax(qMax(bounds.left() - point.x(), 0.0),
+                                  point.x() - bounds.right());
+            const qreal dy = qMax(qMax(bounds.top() - point.y(), 0.0),
+                                  point.y() - bounds.bottom());
+            const qreal distance = dx * dx + dy * dy;
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                wordIndex = index;
+            }
+        }
+    }
+    if (wordIndex < 0)
+        return;
+
+    const auto isWordCharacter = [](const QString &text) {
+        if (text.isEmpty())
+            return false;
+        const QChar character = text.at(0);
+        const QChar::Category category = character.category();
+        return character.isLetterOrNumber() || character == QLatin1Char('_')
+               || category == QChar::Mark_NonSpacing
+               || category == QChar::Mark_SpacingCombining
+               || category == QChar::Mark_Enclosing;
+    };
+
+    constexpr int contextRadius = 256;
+    const int contextStart = qMax(0, wordIndex - contextRadius);
+    const QPdfSelection context = m_document->getSelectionAtIndex(
+        page, contextStart, contextRadius * 2 + 1);
+    const QString contextText = context.text();
+    const int contextIndex = wordIndex - context.startIndex();
+    if (!context.isValid() || contextIndex < 0 || contextIndex >= contextText.size()
+        || !isWordCharacter(contextText.mid(contextIndex, 1)))
+        return;
+
+    int wordStart = contextIndex;
+    while (wordStart > 0
+           && isWordCharacter(contextText.mid(wordStart - 1, 1)))
+        --wordStart;
+
+    int wordEnd = contextIndex + 1;
+    while (wordEnd < contextText.size()
+           && isWordCharacter(contextText.mid(wordEnd, 1)))
+        ++wordEnd;
+
+    const QPdfSelection word = m_document->getSelectionAtIndex(
+        page, context.startIndex() + wordStart, wordEnd - wordStart);
+    if (!word.isValid() || word.text().isEmpty())
+        return;
+
+    m_selection.clear();
+    SelectionPart part;
+    part.page = page;
+    part.bounds = word.bounds();
+    part.text = word.text();
+    m_selection.append(part);
+    m_selStartPage = page;
+    m_selEndPage = page;
+    m_selStartPoint = point;
+    m_selEndPoint = point;
+    m_selMoved = true;
+    m_selecting = false;
+    m_autoScroll->stop();
+    viewport()->update();
+    emit textSelected();
+}
+
 void PageView::clearSelection()
 {
     m_selStartPage = -1;
@@ -1733,6 +1820,11 @@ void PageView::mouseDoubleClickEvent(QMouseEvent *event)
                                        &annotationId, &bounds, &text, &style)) {
             selectTextAnnotation(page, annotationId, bounds, text, style);
             emit textAnnotationEditRequested(page, annotationId, text);
+            return;
+        }
+        if (page >= 0) {
+            clearSelectedTextAnnotation();
+            selectWordAt(page, pagePointFor(page, pos));
             return;
         }
     }

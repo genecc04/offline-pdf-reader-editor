@@ -69,14 +69,14 @@ which most computers already have.
 
 ## Known limitations
 
-- **Form fields are not interactive.** The app does not detect a PDF's built-in fillable
-  fields. What you add is placed on top of the page, so the form's own fields stay empty
-  and other programs that read form data will not see it.
+- **Some PDF form field types may not be supported.** The app supports built-in text
+  fields, checkboxes, radio buttons, combo boxes and list boxes. Fields that are read-only
+  cannot be edited.
 - **White-out only covers.** The text under it is still in the file, so search and
   copy still find it. Don't use it to hide anything sensitive.
 - Added text uses only the standard PDF fonts Helvetica, Times, and Courier for
   cross-viewer compatibility.
-- Links inside PDFs are not clickable yet, and double-click does not select a word.
+- Links inside PDFs are not clickable yet.
 - Scanned PDFs have no text to select or search (there is no OCR).
 - Inserting pages from a password-protected PDF is not supported.
 - Bookmarks are not updated after you delete or reorder pages.
