@@ -7,10 +7,12 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QAbstractSpinBox>
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMenu>
@@ -23,6 +25,12 @@
 #include <QToolBar>
 
 #include <utility>
+
+namespace
+{
+constexpr int kToolbarIconSize = 32;
+constexpr int kNumericControlWidth = 88;
+}
 
 void MainWindow::setupViewer()
 {
@@ -317,10 +325,16 @@ void MainWindow::setupToolbar()
     QToolBar *toolbar = addToolBar("Navigation");
     toolbar->setObjectName("navigationToolbar");
     toolbar->setMovable(false);
+    toolbar->setIconSize(QSize(kToolbarIconSize, kToolbarIconSize));
+    toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
     // Page navigation
     QAction *prevAction = toolbar->addAction("< Prev");
     QAction *nextAction = toolbar->addAction("Next >");
+    prevAction->setIcon(QIcon(":/icons/previous.png"));
+    prevAction->setToolTip("Previous page");
+    nextAction->setIcon(QIcon(":/icons/next.png"));
+    nextAction->setToolTip("Next page");
 
     m_pageBox = new QSpinBox(this);
     m_pageBox->setRange(0, 0);
@@ -335,18 +349,25 @@ void MainWindow::setupToolbar()
     QAction *zoomInAction = toolbar->addAction("Zoom +");
     QAction *fitWidthAction = toolbar->addAction("Fit width");
     QAction *fitPageAction = toolbar->addAction("Fit page");
+    zoomOutAction->setIcon(QIcon(":/icons/zoomout.png"));
+    zoomInAction->setIcon(QIcon(":/icons/zoomin.png"));
+    fitWidthAction->setIcon(QIcon(":/icons/fitwidth.png"));
+    fitPageAction->setIcon(QIcon(":/icons/fitpage.png"));
 
     toolbar->addSeparator();
 
     // Editing
     m_rotateLeftAction = toolbar->addAction("Rotate left");
+    m_rotateLeftAction->setIcon(QIcon(":/icons/rotateleft.png"));
     m_rotateLeftAction->setShortcut(Qt::CTRL | Qt::Key_L);
     m_rotateRightAction = toolbar->addAction("Rotate right");
+    m_rotateRightAction->setIcon(QIcon(":/icons/rotateright.png"));
     m_rotateRightAction->setShortcut(Qt::CTRL | Qt::Key_R);
     connect(m_rotateLeftAction, &QAction::triggered, this, [this]() { rotateSelectedPages(-90); });
     connect(m_rotateRightAction, &QAction::triggered, this, [this]() { rotateSelectedPages(90); });
 
     m_deletePageAction = toolbar->addAction("Delete pages");
+    m_deletePageAction->setIcon(QIcon(":/icons/deletepage.png"));
     connect(m_deletePageAction, &QAction::triggered, this, &MainWindow::deleteSelectedPages);
 
     // Wiring
@@ -392,17 +413,22 @@ void MainWindow::setupImageToolbar()
     QToolBar *toolbar = addToolBar("Image");
     toolbar->setObjectName("imageToolbar");
     toolbar->setMovable(false);
+    toolbar->setIconSize(QSize(kToolbarIconSize, kToolbarIconSize));
+    toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
     toolbar->addAction(m_addImageAction);
+    m_addImageAction->setIcon(QIcon(":/icons/addimage.png"));
     toolbar->addSeparator();
 
     m_cropImageAction = toolbar->addAction("Crop");
+    m_cropImageAction->setIcon(QIcon(":/icons/crop.png"));
     m_cropImageAction->setCheckable(true);
     m_cropImageAction->setEnabled(false);
     connect(m_cropImageAction, &QAction::toggled,
             m_view, &PageView::setImageCropMode);
 
     m_cancelImageAction = toolbar->addAction("Cancel");
+    m_cancelImageAction->setIcon(QIcon(":/icons/cancelimage.png"));
     m_cancelImageAction->setEnabled(false);
     m_cancelImageAction->setShortcut(QKeySequence(Qt::Key_Escape));
     m_cancelImageAction->setShortcutContext(Qt::WindowShortcut);
@@ -416,9 +442,16 @@ void MainWindow::setupTextToolbar()
     QToolBar *toolbar = addToolBar("Text");
     toolbar->setObjectName("textToolbar");
     toolbar->setMovable(false);
+    toolbar->setIconSize(QSize(kToolbarIconSize, kToolbarIconSize));
+    toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    toolbar->setStyleSheet(
+        "QToolButton:checked { border: 2px solid palette(highlight); border-radius: 4px; }");
 
     toolbar->addAction(m_addTextAction);
+    m_addTextAction->setIcon(QIcon(":/icons/addtext.png"));
+    m_addTextAction->setToolTip("Add text to the PDF (active when checked)");
     m_deleteTextAction = toolbar->addAction("Delete");
+    m_deleteTextAction->setIcon(QIcon(":/icons/deletetext.png"));
     m_deleteTextAction->setEnabled(false);
     m_deleteTextAction->setToolTip("Delete selected text box");
     connect(m_deleteTextAction, &QAction::triggered,
@@ -436,7 +469,9 @@ void MainWindow::setupTextToolbar()
     size->setRange(6, 200);
     size->setValue(12);
     size->setSuffix(" pt");
-    size->setFocusPolicy(Qt::NoFocus);
+    size->setMinimumWidth(kNumericControlWidth);
+    size->setCorrectionMode(QAbstractSpinBox::CorrectToNearestValue);
+    size->setKeyboardTracking(false);
     toolbar->addWidget(size);
 
     auto *colorButton = new ColorMenuButton(QColor(0, 0, 0), this);
@@ -462,8 +497,14 @@ void MainWindow::setupDrawToolbar()
     QToolBar *toolbar = addToolBar("Draw");
     toolbar->setObjectName("drawToolbar");
     toolbar->setMovable(false);
+    toolbar->setIconSize(QSize(kToolbarIconSize, kToolbarIconSize));
+    toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    toolbar->setStyleSheet(
+        "QToolButton:checked { border: 2px solid palette(highlight); border-radius: 4px; }");
 
     toolbar->addAction(m_drawAction);
+    m_drawAction->setIcon(QIcon(":/icons/draw.png"));
+    m_drawAction->setToolTip("Draw on the PDF (active when checked)");
 
     auto *mode = new QComboBox(this);
     mode->addItem("Pen");
@@ -478,7 +519,9 @@ void MainWindow::setupDrawToolbar()
     size->setRange(1, 60);
     size->setValue(2);
     size->setSuffix(" pt");
-    size->setFocusPolicy(Qt::NoFocus);
+    size->setMinimumWidth(kNumericControlWidth);
+    size->setCorrectionMode(QAbstractSpinBox::CorrectToNearestValue);
+    size->setKeyboardTracking(false);
     toolbar->addWidget(size);
 
     toolbar->addWidget(new QLabel(" Opacity ", this));
@@ -486,7 +529,9 @@ void MainWindow::setupDrawToolbar()
     opacity->setRange(5, 100);
     opacity->setValue(100);
     opacity->setSuffix(" %");
-    opacity->setFocusPolicy(Qt::NoFocus);
+    opacity->setMinimumWidth(kNumericControlWidth);
+    opacity->setCorrectionMode(QAbstractSpinBox::CorrectToNearestValue);
+    opacity->setKeyboardTracking(false);
     toolbar->addWidget(opacity);
 
     auto *colorButton = new ColorMenuButton(QColor(0, 0, 0), this);

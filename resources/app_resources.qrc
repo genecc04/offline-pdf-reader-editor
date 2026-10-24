@@ -1,5 +1,20 @@
 <RCC>
     <qresource prefix="/icons">
         <file alias="pdfappicon.png">pdfappicon.png</file>
+        <file alias="next.png">icons/next.png</file>
+        <file alias="previous.png">icons/previous.png</file>
+        <file alias="zoomin.png">icons/zoomin.png</file>
+        <file alias="zoomout.png">icons/zoomout.png</file>
+        <file alias="fitwidth.png">icons/fitwidth.png</file>
+        <file alias="fitpage.png">icons/fitpage.png</file>
+        <file alias="rotateleft.png">icons/rotateleft.png</file>
+        <file alias="rotateright.png">icons/rotateright.png</file>
+        <file alias="deletepage.png">icons/deletepage.png</file>
+        <file alias="addtext.png">icons/addtext.png</file>
+        <file alias="deletetext.png">icons/deletetext.png</file>
+        <file alias="addimage.png">icons/addimage.png</file>
+        <file alias="crop.png">icons/crop.png</file>
+        <file alias="cancelimage.png">icons/cancelimage.png</file>
+        <file alias="draw.png">icons/draw.png</file>
     </qresource>
 </RCC>

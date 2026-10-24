@@ -9,7 +9,7 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Pdf PdfWidgets)
 find_package(unofficial-libmupdf CONFIG REQUIRED)
 
-add_executable(PdfApp
+add_executable(PdfApp WIN32
     src/app/main.cpp
     src/app/MainWindow.cpp
     src/app/MainWindow.h
