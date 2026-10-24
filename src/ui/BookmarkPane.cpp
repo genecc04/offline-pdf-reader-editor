@@ -9,6 +9,7 @@ BookmarkPane::BookmarkPane(QWidget *parent)
     m_model = new QPdfBookmarkModel(this);
     setModel(m_model);
     setHeaderHidden(true);
+    setUniformRowHeights(true);
 
     connect(this, &QTreeView::clicked, this, [this](const QModelIndex &index) {
         const int page = index.data(int(QPdfBookmarkModel::Role::Page)).toInt();

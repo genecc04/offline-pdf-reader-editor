@@ -9,11 +9,13 @@
 #include <QPolygonF>
 #include <QRect>
 #include <QRectF>
+#include <QSet>
 #include <QSize>
 #include <QSizeF>
 #include <QString>
 #include <QUrl>
 #include <QVector>
+#include <QThreadPool>
 #include <functional>
 
 class QPdfDocument;
@@ -69,6 +71,7 @@ public:
     explicit PageView(QWidget *parent = nullptr);
 
     void setDocument(QPdfDocument *document);
+    void setRenderSource(const QString &path, const QString &password = QString());
     void setPageRenderDocument(QPdfDocument *document,
                                const QList<int> &changedPages = {});
     void setSearchModel(QPdfSearchModel *model);
@@ -174,12 +177,27 @@ private:
         FormField field;
     };
 
+    struct LinkHitRegion {
+        QRectF bounds;
+        int linkIndex = -1;
+    };
+
+    struct PageLinkCache {
+        QList<QPdfLink> links;
+        QVector<LinkHitRegion> regions;
+        QVector<QVector<int>> cells;
+        bool loaded = false;
+    };
+
     void onDocumentChanged();
+    void invalidatePendingPageRenders();
     void recalculateLayout(bool keepPosition);
+    double fitPageZoomFactor() const;
     void positionEmptyStateButton();
     void updateCurrentPage();
     int pageAtViewportPoint(const QPoint &point) const;
     const QList<QPdfLink> &linksOnPage(int page);
+    void loadPageLinks(int page);
     QPdfLink linkAtViewportPoint(const QPoint &point);
     void setHoveredLink(const QUrl &url);
     int nearestPage(const QPoint &viewportPos) const;
@@ -226,15 +244,20 @@ private:
 
     QPdfDocument *m_document = nullptr;
     QPdfDocument *m_pageRenderDocument = nullptr;
+    QString m_renderSourcePath;
+    QString m_renderPassword;
+    quint64 m_renderGeneration = 0;
+    QThreadPool m_renderPool;
     QPdfLinkModel *m_linkModel = nullptr;
-    QVector<QList<QPdfLink>> m_pageLinks;
-    QVector<bool> m_pageLinksLoaded;
+    QVector<PageLinkCache> m_pageLinkCaches;
     QPdfSearchModel *m_search = nullptr;
     QPushButton *m_emptyStateOpenButton = nullptr;
+    QTimer *m_zoomTimer = nullptr;
     int m_searchIndex = -1;
 
     ZoomMode m_zoomMode = ZoomMode::FitToWidth;
     double m_customZoom = 1.0;
+    double m_pendingZoomFactor = 1.0;
     double m_scale = 1.0;
     QVector<QSizeF> m_pageSizes;
     QVector<QRect> m_pageRects;
@@ -250,6 +273,10 @@ private:
 
     QCache<quint64, QPixmap> m_cache;
     QCache<quint64, QPixmap> m_baseCache;
+    QSet<quint64> m_failedPageKeys;
+    QSet<quint64> m_failedBaseKeys;
+    QSet<quint64> m_pendingPageKeys;
+    QSet<quint64> m_pendingBaseKeys;
 
     // text tool
     bool m_textTool = false;

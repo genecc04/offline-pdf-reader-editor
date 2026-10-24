@@ -5,6 +5,8 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QDebug>
+#include <QEventLoop>
 #include <QFocusEvent>
 #include <QFont>
 #include <QGuiApplication>
@@ -12,6 +14,7 @@
 #include <QLineEdit>
 #include <QLineF>
 #include <QMenu>
+#include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -26,20 +29,42 @@
 #include <QPolygonF>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QThreadPool>
 #include <QStringList>
 #include <QTextCursor>
 #include <QTimer>
 #include <QWheelEvent>
 #include <QtMath>
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 
 namespace {
 constexpr int kMargin = 12;
 constexpr int kSpacing = 12;
+constexpr int kLinkGridSize = 16;
+constexpr int kMinLinksForSpatialIndex = 24;
+constexpr int kZoomUpdateIntervalMs = 75;
 constexpr double kMinZoom = 0.1;
-constexpr double kMaxZoom = 8.0;
+constexpr double kMaxZoom = 4.0;
+
+class FunctionRunnable final : public QRunnable
+{
+public:
+    explicit FunctionRunnable(std::function<void()> function)
+        : m_function(std::move(function))
+    {
+    }
+
+    void run() override
+    {
+        m_function();
+    }
+
+private:
+    std::function<void()> m_function;
+};
 
 double pointSegmentDistanceSquared(const QPointF &point, const QPointF &start,
                                    const QPointF &end)
@@ -107,6 +132,7 @@ PageView::PageView(QWidget *parent)
     , m_cache(256 * 1024)
     , m_baseCache(64 * 1024)
 {
+    m_renderPool.setMaxThreadCount(1);
     setFocusPolicy(Qt::StrongFocus);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     horizontalScrollBar()->setSingleStep(30);
@@ -127,6 +153,13 @@ PageView::PageView(QWidget *parent)
                        " QPushButton:pressed { background: #d8dee6; }"));
     connect(m_emptyStateOpenButton, &QPushButton::clicked,
             this, &PageView::openRequested);
+
+    m_zoomTimer = new QTimer(this);
+    m_zoomTimer->setSingleShot(true);
+    m_zoomTimer->setInterval(kZoomUpdateIntervalMs);
+    connect(m_zoomTimer, &QTimer::timeout, this, [this]() {
+        setZoomFactor(m_pendingZoomFactor);
+    });
 
     m_autoScroll = new QTimer(this);
     m_autoScroll->setInterval(30);
@@ -160,6 +193,16 @@ void PageView::setDocument(QPdfDocument *document)
     onDocumentChanged();
 }
 
+void PageView::setRenderSource(const QString &path, const QString &password)
+{
+    m_renderSourcePath = path;
+    m_renderPassword = password;
+    invalidatePendingPageRenders();
+    m_failedPageKeys.clear();
+    m_failedBaseKeys.clear();
+    viewport()->update();
+}
+
 void PageView::setPageRenderDocument(QPdfDocument *document,
                                      const QList<int> &changedPages)
 {
@@ -167,10 +210,14 @@ void PageView::setPageRenderDocument(QPdfDocument *document,
     if (changedPages.isEmpty()) {
         m_cache.clear();
         m_baseCache.clear();
+        m_failedPageKeys.clear();
+        m_failedBaseKeys.clear();
+        invalidatePendingPageRenders();
         viewport()->update();
         return;
     }
 
+    invalidatePendingPageRenders();
     const QList<quint64> keys = m_cache.keys();
     for (quint64 key : keys) {
         if (changedPages.contains(int(key >> 40)))
@@ -181,7 +228,22 @@ void PageView::setPageRenderDocument(QPdfDocument *document,
         if (changedPages.contains(int(key >> 40)))
             m_baseCache.remove(key);
     }
+    for (int page : changedPages) {
+        for (auto it = m_failedPageKeys.begin(); it != m_failedPageKeys.end();) {
+            if ((*it >> 40) == quint64(page))
+                it = m_failedPageKeys.erase(it);
+            else
+                ++it;
+        }
+        for (auto it = m_failedBaseKeys.begin(); it != m_failedBaseKeys.end();) {
+            if ((*it >> 40) == quint64(page))
+                it = m_failedBaseKeys.erase(it);
+            else
+                ++it;
+        }
+    }
 
+    viewport()->update();
     const QPoint offset(horizontalScrollBar()->value(), verticalScrollBar()->value());
     for (int page : changedPages) {
         if (page >= 0 && page < m_pageRects.size())
@@ -191,6 +253,9 @@ void PageView::setPageRenderDocument(QPdfDocument *document,
 
 void PageView::onDocumentChanged()
 {
+    invalidatePendingPageRenders();
+    m_zoomTimer->stop();
+    m_pendingZoomFactor = zoomFactor();
     finishEditor(false);
     finishFormEditor(false);
     finishImage(false);
@@ -222,19 +287,27 @@ void PageView::onDocumentChanged()
 
     m_cache.clear();
     m_baseCache.clear();
+    m_failedPageKeys.clear();
+    m_failedBaseKeys.clear();
     m_pageSizes.clear();
-    m_pageLinks.clear();
-    m_pageLinksLoaded.clear();
+    m_pageLinkCaches.clear();
 
     if (m_document && m_document->status() == QPdfDocument::Status::Ready) {
         const int count = m_document->pageCount();
         m_pageSizes.reserve(count);
-        m_pageLinks.resize(count);
-        m_pageLinksLoaded.fill(false, count);
+        m_pageLinkCaches.resize(count);
         for (int i = 0; i < count; ++i)
             m_pageSizes.append(m_document->pagePointSize(i));
     }
     recalculateLayout(false);
+}
+
+void PageView::invalidatePendingPageRenders()
+{
+    ++m_renderGeneration;
+    m_renderPool.clear();
+    m_pendingPageKeys.clear();
+    m_pendingBaseKeys.clear();
 }
 
 void PageView::positionEmptyStateButton()
@@ -253,13 +326,16 @@ void PageView::positionEmptyStateButton()
 
 void PageView::setZoomMode(ZoomMode mode)
 {
+    invalidatePendingPageRenders();
     m_zoomMode = mode;
     recalculateLayout(true);
 }
 
 void PageView::setZoomFactor(double factor)
 {
-    m_customZoom = qBound(kMinZoom, factor, kMaxZoom);
+    invalidatePendingPageRenders();
+    m_zoomTimer->stop();
+    m_customZoom = qBound(fitPageZoomFactor(), factor, kMaxZoom);
     m_zoomMode = ZoomMode::Custom;
     recalculateLayout(true);
 }
@@ -269,8 +345,30 @@ double PageView::zoomFactor() const
     return m_scale / (logicalDpiX() / 72.0);
 }
 
+double PageView::fitPageZoomFactor() const
+{
+    if (m_pageSizes.isEmpty())
+        return kMinZoom;
+
+    double maxWidth = 1.0;
+    double maxHeight = 1.0;
+    for (const QSizeF &size : std::as_const(m_pageSizes)) {
+        maxWidth = qMax(maxWidth, size.width());
+        maxHeight = qMax(maxHeight, size.height());
+    }
+
+    const double fitScale = qMax(
+        0.01, qMin((viewport()->width() - 2.0 * kMargin) / maxWidth,
+                   (viewport()->height() - 2.0 * kMargin) / maxHeight));
+    return qBound(kMinZoom,
+                  fitScale / (logicalDpiX() / 72.0), kMaxZoom);
+}
+
 void PageView::recalculateLayout(bool keepPosition)
 {
+    if (m_zoomMode == ZoomMode::Custom)
+        m_customZoom = qBound(fitPageZoomFactor(), m_customZoom, kMaxZoom);
+
     int anchorPage = -1;
     double anchorFraction = 0.0;
     if (keepPosition && !m_pageRects.isEmpty()) {
@@ -304,7 +402,8 @@ void PageView::recalculateLayout(bool keepPosition)
                            (viewHeight - 2.0 * kMargin) / maxHeight);
             break;
         }
-        m_scale = qMax(m_scale, 0.01);
+        m_scale = qBound(0.01, m_scale,
+                         kMaxZoom * logicalDpiX() / 72.0);
 
         QVector<QSize> pixelSizes;
         pixelSizes.reserve(m_pageSizes.size());
@@ -355,13 +454,10 @@ void PageView::updateCurrentPage()
         return;
 
     const int middle = verticalScrollBar()->value() + viewport()->height() / 2;
-    int page = 0;
-    for (int i = 0; i < m_pageRects.size(); ++i) {
-        if (m_pageRects.at(i).top() <= middle)
-            page = i;
-        else
-            break;
-    }
+    const auto nextPage = std::upper_bound(
+        m_pageRects.cbegin(), m_pageRects.cend(), middle,
+        [](int y, const QRect &rect) { return y < rect.top(); });
+    const int page = qMax(0, int(nextPage - m_pageRects.cbegin()) - 1);
     if (page != m_currentPage) {
         m_currentPage = page;
         emit currentPageChanged(page);
@@ -407,22 +503,53 @@ int PageView::pageAtViewportPoint(const QPoint &point) const
 const QList<QPdfLink> &PageView::linksOnPage(int page)
 {
     static const QList<QPdfLink> emptyLinks;
-    if (!m_linkModel || page < 0 || page >= m_pageLinks.size())
+    if (!m_linkModel || page < 0 || page >= m_pageLinkCaches.size())
         return emptyLinks;
-    if (m_pageLinksLoaded.at(page))
-        return m_pageLinks.at(page);
+    if (!m_pageLinkCaches.at(page).loaded)
+        loadPageLinks(page);
+    return m_pageLinkCaches.at(page).links;
+}
 
+void PageView::loadPageLinks(int page)
+{
     m_linkModel->setPage(page);
-    QList<QPdfLink> &links = m_pageLinks[page];
+    PageLinkCache &cache = m_pageLinkCaches[page];
     const int linkCount = m_linkModel->rowCount(QModelIndex());
-    links.reserve(linkCount);
+    cache.links.reserve(linkCount);
     for (int row = 0; row < linkCount; ++row) {
-        links.append(m_linkModel->data(
+        const QPdfLink link = m_linkModel->data(
             m_linkModel->index(row, 0),
-            int(QPdfLinkModel::Role::Link)).value<QPdfLink>());
+            int(QPdfLinkModel::Role::Link)).value<QPdfLink>();
+        const int linkIndex = cache.links.size();
+        cache.links.append(link);
+        for (const QRectF &bounds : link.rectangles()) {
+            LinkHitRegion region;
+            region.bounds = bounds;
+            region.linkIndex = linkIndex;
+            cache.regions.append(region);
+        }
     }
-    m_pageLinksLoaded[page] = true;
-    return links;
+
+    if (cache.regions.size() >= kMinLinksForSpatialIndex) {
+        cache.cells.resize(kLinkGridSize * kLinkGridSize);
+        const QSizeF pageSize = m_pageSizes.at(page);
+        const auto cellFor = [](qreal coordinate, qreal extent) {
+            return qBound(0, int(coordinate * kLinkGridSize / extent),
+                          kLinkGridSize - 1);
+        };
+        for (int regionIndex = 0; regionIndex < cache.regions.size(); ++regionIndex) {
+            const QRectF &bounds = cache.regions.at(regionIndex).bounds;
+            const int left = cellFor(bounds.left(), pageSize.width());
+            const int right = cellFor(bounds.right(), pageSize.width());
+            const int top = cellFor(bounds.top(), pageSize.height());
+            const int bottom = cellFor(bounds.bottom(), pageSize.height());
+            for (int y = top; y <= bottom; ++y) {
+                for (int x = left; x <= right; ++x)
+                    cache.cells[y * kLinkGridSize + x].append(regionIndex);
+            }
+        }
+    }
+    cache.loaded = true;
 }
 
 QPdfLink PageView::linkAtViewportPoint(const QPoint &point)
@@ -432,11 +559,27 @@ QPdfLink PageView::linkAtViewportPoint(const QPoint &point)
         return QPdfLink();
 
     const QPointF pagePoint = pagePointFor(page, point);
-    for (const QPdfLink &link : linksOnPage(page)) {
-        for (const QRectF &rect : link.rectangles()) {
-            if (rect.contains(pagePoint))
-                return link;
+    const QList<QPdfLink> &links = linksOnPage(page);
+    const PageLinkCache &cache = m_pageLinkCaches.at(page);
+    if (!cache.cells.isEmpty()) {
+        const QSizeF pageSize = m_pageSizes.at(page);
+        const auto cellFor = [](qreal coordinate, qreal extent) {
+            return qBound(0, int(coordinate * kLinkGridSize / extent),
+                          kLinkGridSize - 1);
+        };
+        const int x = cellFor(pagePoint.x(), pageSize.width());
+        const int y = cellFor(pagePoint.y(), pageSize.height());
+        for (int regionIndex : cache.cells.at(y * kLinkGridSize + x)) {
+            const LinkHitRegion &region = cache.regions.at(regionIndex);
+            if (region.bounds.contains(pagePoint))
+                return links.at(region.linkIndex);
         }
+        return QPdfLink();
+    }
+
+    for (const LinkHitRegion &region : cache.regions) {
+        if (region.bounds.contains(pagePoint))
+            return links.at(region.linkIndex);
     }
     return QPdfLink();
 }
@@ -625,25 +768,123 @@ QPixmap PageView::pageImage(int page, const QSize &size, qreal dpr,
     const quint64 key = (quint64(page) << 40) | (quint64(size.width()) << 20)
                         | quint64(size.height());
     QCache<quint64, QPixmap> &cache = includeAnnotations ? m_cache : m_baseCache;
+    QSet<quint64> &failedKeys = includeAnnotations
+                                    ? m_failedPageKeys : m_failedBaseKeys;
+    QSet<quint64> &pendingKeys = includeAnnotations
+                                     ? m_pendingPageKeys : m_pendingBaseKeys;
     if (QPixmap *cached = cache.object(key))
         return *cached;
+    if (failedKeys.contains(key))
+        return QPixmap();
 
-    QPdfDocumentRenderOptions options;
-    if (includeAnnotations) {
-        options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
-    } else {
-        options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlags());
+    if (!pendingKeys.contains(key)) {
+        pendingKeys.insert(key);
+        const quint64 generation = m_renderGeneration;
+        const QString sourcePath = m_renderSourcePath;
+        const QString password = m_renderPassword;
+        const QSize renderSize = size * dpr;
+        m_renderPool.start(new FunctionRunnable(
+            [this, page, key, generation, sourcePath, password, renderSize,
+             dpr, includeAnnotations]() {
+                QImage image;
+                QString error;
+                QPdfDocument document;
+                document.setPassword(password);
+                const QPdfDocument::Error loadError = document.load(sourcePath);
+                if (loadError != QPdfDocument::Error::None) {
+                    error = QStringLiteral("Could not load PDF for background rendering (error %1).")
+                                .arg(int(loadError));
+                } else if (document.status() == QPdfDocument::Status::Loading) {
+                    QEventLoop loop;
+                    QTimer timeout;
+                    timeout.setSingleShot(true);
+                    QObject::connect(&document, &QPdfDocument::statusChanged,
+                                     &loop, [&document, &loop]() {
+                        if (document.status() != QPdfDocument::Status::Loading)
+                            loop.quit();
+                    });
+                    QObject::connect(&timeout, &QTimer::timeout,
+                                     &loop, &QEventLoop::quit);
+                    timeout.start(30000);
+                    if (document.status() == QPdfDocument::Status::Loading)
+                        loop.exec();
+                    if (document.status() != QPdfDocument::Status::Ready) {
+                        error = QStringLiteral("PDF did not become ready for background rendering.");
+                    }
+                }
+
+                if (error.isEmpty()) {
+                    QPdfDocumentRenderOptions options;
+                    if (includeAnnotations) {
+                        options.setRenderFlags(
+                            QPdfDocumentRenderOptions::RenderFlag::Annotations);
+                    } else {
+                        options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlags());
+                    }
+                    image = document.render(page, renderSize, options);
+                    if (image.isNull())
+                        error = QStringLiteral("PDF renderer returned an empty page image.");
+                }
+
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, page, key, generation, dpr, includeAnnotations,
+                     image = std::move(image), error = std::move(error)]() {
+                        if (generation != m_renderGeneration)
+                            return;
+
+                        QSet<quint64> &pending = includeAnnotations
+                                                     ? m_pendingPageKeys : m_pendingBaseKeys;
+                        QSet<quint64> &failed = includeAnnotations
+                                                    ? m_failedPageKeys : m_failedBaseKeys;
+                        QCache<quint64, QPixmap> &targetCache = includeAnnotations
+                                                                   ? m_cache : m_baseCache;
+                        pending.remove(key);
+
+                        if (image.isNull()) {
+                            failed.insert(key);
+                            qWarning().noquote()
+                                << QStringLiteral("Could not render PDF page %1: %2")
+                                       .arg(page + 1).arg(error);
+                        } else {
+                            failed.remove(key);
+                            QPixmap pixmap = QPixmap::fromImage(image);
+                            pixmap.setDevicePixelRatio(dpr);
+                            targetCache.insert(
+                                key, new QPixmap(pixmap),
+                                pixmap.width() * pixmap.height() * 4 / 1024);
+                        }
+
+                        if (page >= 0 && page < m_pageRects.size()) {
+                            const QPoint offset(horizontalScrollBar()->value(),
+                                                verticalScrollBar()->value());
+                            viewport()->update(
+                                m_pageRects.at(page).translated(-offset));
+                        }
+                    },
+                    Qt::QueuedConnection);
+            }));
     }
-    QPdfDocument *source = m_pageRenderDocument
-                                   && m_pageRenderDocument->status() == QPdfDocument::Status::Ready
-                               ? m_pageRenderDocument
-                               : m_document;
-    const QImage image = source->render(page, size * dpr, options);
 
-    QPixmap pixmap = QPixmap::fromImage(image);
-    pixmap.setDevicePixelRatio(dpr);
-    cache.insert(key, new QPixmap(pixmap), pixmap.width() * pixmap.height() * 4 / 1024);
-    return pixmap;
+    const QList<quint64> candidates = cache.keys();
+    QPixmap closestPreview;
+    double closestScore = std::numeric_limits<double>::max();
+    for (quint64 candidateKey : candidates) {
+        if ((candidateKey >> 40) != quint64(page))
+            continue;
+        QPixmap *candidate = cache.object(candidateKey);
+        if (!candidate)
+            continue;
+        const double logicalWidth = candidate->width() / candidate->devicePixelRatio();
+        const double logicalHeight = candidate->height() / candidate->devicePixelRatio();
+        const double score = qAbs(qLn(qMax(1.0, logicalWidth) / qMax(1, size.width())))
+                             + qAbs(qLn(qMax(1.0, logicalHeight) / qMax(1, size.height())));
+        if (score < closestScore) {
+            closestScore = score;
+            closestPreview = *candidate;
+        }
+    }
+    return closestPreview;
 }
 
 void PageView::drawStroke(QPainter &painter, const Stroke &stroke, const QRect &pageRect)
@@ -714,17 +955,24 @@ void PageView::paintEvent(QPaintEvent *event)
         current = m_search->resultAtIndex(m_searchIndex);
     }
 
-    for (int page = 0; page < m_pageRects.size(); ++page) {
+    const auto firstVisiblePage = std::lower_bound(
+        m_pageRects.cbegin(), m_pageRects.cend(), visible.top(),
+        [](const QRect &rect, int y) { return rect.bottom() < y; });
+    for (int page = int(firstVisiblePage - m_pageRects.cbegin());
+         page < m_pageRects.size(); ++page) {
         const QRect &r = m_pageRects.at(page);
         if (r.top() > visible.bottom())
             break;
-        if (!r.intersects(visible))
-            continue;
 
         const QRect target = r.translated(-offset);
         painter.fillRect(target, Qt::white);
         QPixmap renderedPage = pageImage(page, target.size(), dpr);
-        if (m_erasing && m_erasePage == page) {
+        const bool exactPageImage = !renderedPage.isNull()
+                                    && qAbs(renderedPage.width() / dpr
+                                            - target.width()) < 1.0
+                                    && qAbs(renderedPage.height() / dpr
+                                            - target.height()) < 1.0;
+        if (m_erasing && m_erasePage == page && exactPageImage) {
             QPainterPath erasedInk;
             for (const ErasePreviewStroke &preview : std::as_const(m_erasePreviewStrokes)) {
                 if (!preview.erased || preview.stroke.points.isEmpty())
@@ -758,7 +1006,8 @@ void PageView::paintEvent(QPaintEvent *event)
                     QPoint(0, 0), pageImage(page, target.size(), dpr, false));
             }
         }
-        painter.drawPixmap(target.topLeft(), renderedPage);
+        if (!renderedPage.isNull())
+            painter.drawPixmap(target, renderedPage, renderedPage.rect());
         drawSearchResults(painter, page, target, current);
         drawFormFieldOverlays(painter, page, target);
 
@@ -864,7 +1113,12 @@ void PageView::scrollContentsBy(int dx, int dy)
 void PageView::wheelEvent(QWheelEvent *event)
 {
     if (event->modifiers() & Qt::ControlModifier) {
-        setZoomFactor(zoomFactor() * (event->angleDelta().y() > 0 ? 1.1 : 1.0 / 1.1));
+        const double currentZoom = m_zoomTimer->isActive()
+                                       ? m_pendingZoomFactor
+                                       : zoomFactor();
+        m_pendingZoomFactor = currentZoom
+                              * (event->angleDelta().y() > 0 ? 1.1 : 1.0 / 1.1);
+        m_zoomTimer->start();
         event->accept();
         return;
     }

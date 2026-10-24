@@ -9,7 +9,7 @@ web links embedded in a PDF in your default browser after you confirm.
 **Reading**
 - Open PDFs, including password-protected ones. Drag a file onto the window, use
   File > Open Recent, or open one from the command line
-- Page navigation and zoom: zoom in and out, fit width, fit page, Ctrl + mouse wheel
+- Page navigation and zoom: zoom in and out, fit width, fit page, Ctrl + mouse wheel.
 - Page thumbnails, drawn on demand so large files open quickly
 - Full-text search with highlighted results
 - Bookmarks / table of contents
